@@ -158,6 +158,9 @@ class OfcGameBase:
     def current_player(self):
         return self.players[self.current_player_ind]
 
+    def hero_player(self):
+        return self.players[self.hero]
+
     def _next_player(self):
         cur_ind = self.current_player_ind
         while True:

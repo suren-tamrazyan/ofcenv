@@ -25,6 +25,7 @@ def random_test(print_game=False):
 
     game_state_tensor = game_state_to_tensor(game)
     if print_game:
+        print(game.hero_player().calc_score_single())
         print(game_state_tensor)
         print(game_state_tensor.shape)
         print(game_state_tensor.dtype)
@@ -33,8 +34,8 @@ def random_test(print_game=False):
     #     print(Card.get_rank_int(i))
 
 
-time_start = time.time()
-for i in range(10000):
-    random_test()
-print("--- %s seconds ---" % (time.time() - time_start))
-# random_test(print_game=True)
+# time_start = time.time()
+# for i in range(10000):
+#     random_test()
+# print("--- %s seconds ---" % (time.time() - time_start))
+random_test(print_game=True)
