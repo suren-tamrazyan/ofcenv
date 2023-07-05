@@ -37,6 +37,7 @@ def action_to_dict(action_id, player):
 
 
 MATRIX_WIDTH = 5
+
 def player_to_rank_matrix(player):
     front_rank = np.pad(np.array([Card.get_rank_int(card) for card in player.front], dtype="int32"), (0, MATRIX_WIDTH - len(player.front)), mode='constant', constant_values=-1)
     middle_rank = np.pad(np.array([Card.get_rank_int(card) for card in player.middle], dtype="int32"), (0, MATRIX_WIDTH - len(player.middle)), mode='constant', constant_values=-1)
@@ -68,3 +69,13 @@ def game_state_to_tensor(game):
     result = np.concatenate(result, axis=0)
     return result
 
+
+def player_to_tensor(player):
+    # ranks
+    ranks = np.row_stack(player_to_rank_matrix(player))
+    # suits
+    suits = np.row_stack(player_to_suit_matrix(player))
+    # matrices to cube
+    result = np.stack([(ranks, suits)], axis=0)
+    result = np.concatenate(result, axis=0)
+    return result

@@ -4,7 +4,7 @@ import numpy as np
 from treys import Card, Deck
 
 from ofc_agent import OfcRandomAgent
-from ofc_encoder import game_state_to_tensor
+from ofc_encoder import game_state_to_tensor, player_to_tensor
 from ofcgame import OfcGame
 
 
@@ -24,11 +24,15 @@ def random_test(print_game=False):
                 print('\n')
 
     game_state_tensor = game_state_to_tensor(game)
+    hero_tensor = player_to_tensor(game.players[game.hero])
     if print_game:
         print(game.hero_player().calc_score_single())
         print(game_state_tensor)
         print(game_state_tensor.shape)
         print(game_state_tensor.dtype)
+        print(hero_tensor)
+        print(hero_tensor.shape)
+        print(hero_tensor.dtype)
     # deck = Deck.GetFullDeck()
     # for i in deck:
     #     print(Card.get_rank_int(i))
