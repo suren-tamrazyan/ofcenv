@@ -1,5 +1,5 @@
 from gymnasium.envs.registration import register
-from ofc_gym import OfcEnv
+#from ofc_gym import OfcEnv
 
 register(
     id='ofc-v0',
