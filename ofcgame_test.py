@@ -24,7 +24,7 @@ def random_test(print_game=False):
                 print('\n')
 
     game_state_tensor = game_state_to_tensor(game)
-    hero_tensor = player_to_tensor(game.players[game.hero])
+    hero_tensor = player_to_tensor(game.players[game.hero], False)
     if print_game:
         print(game.hero_player().calc_score_single())
         print(game_state_tensor)

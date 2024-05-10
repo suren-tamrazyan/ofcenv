@@ -70,11 +70,17 @@ def game_state_to_tensor(game):
     return result
 
 
-def player_to_tensor(player):
+def player_to_tensor(player, dense):
     # ranks
     ranks = np.row_stack(player_to_rank_matrix(player))
+    if dense:
+        ranks += 1
     # suits
     suits = np.row_stack(player_to_suit_matrix(player))
+    if dense:
+        suits = np.where(suits == -1, 0, suits)
+        suits = np.where(suits == 8, 3, suits)
+
     # matrices to cube
     result = np.stack([(ranks, suits)], axis=0)
     result = np.concatenate(result, axis=0)
