@@ -1,5 +1,6 @@
 from treys import Card, Deck
 
+from ofc_encoder import action_dict_to_pretty_str
 from ofc_evaluator import OFCEvaluator
 from royalty_calculator import RoyaltyCalculator
 
@@ -27,9 +28,12 @@ class OfcPlayer:
 
     def __str__(self):
         return "{:<15} {:>7d} F:{:<12s} M:{:<20s} B:{:<20s} D:{:<16s} DL:{:<20s}".format(self.name, self.stack,
-                                                                                       self._box_str(self.front, 3), self._box_str(self.middle, 5),
-                                                                                       self._box_str(self.back, 5), self._box_str(self.dead, 4),
-                                                                                       Card.ints_to_pretty_str(self.to_play))
+                                                                                         self._box_str(self.front, 3),
+                                                                                         self._box_str(self.middle, 5),
+                                                                                         self._box_str(self.back, 5),
+                                                                                         self._box_str(self.dead, 4),
+                                                                                         Card.ints_to_pretty_str(
+                                                                                             self.to_play))
 
     def deal(self, cards):
         if self.to_play:
@@ -154,6 +158,7 @@ class OfcGameBase:
         self.button_ind = button
         self.current_player_ind = button
         self._next_player()
+        self.hh = []  # [{round, player, action, action2str}]
 
     def current_player(self):
         return self.players[self.current_player_ind]
@@ -175,6 +180,7 @@ class OfcGameBase:
         return all(player.is_complete() for player in self.players)
 
     def play(self, dict_cards):
+        self.hh.append((self.round, self.current_player_ind, dict_cards, action_dict_to_pretty_str(dict_cards)))
         self.current_player().play(dict_cards)
 
         ind = self.current_player_ind
@@ -240,6 +246,5 @@ def test():
     player.middle = [Card.new(x) for x in ['2h', '2s', '2d', '2c', '3c']]
     player.back = [Card.new(x) for x in ['3h', '3s', '3d', '3c', '4c']]
     print(player.calc_score_single())
-
 
 # test()

@@ -9,22 +9,31 @@ register(
 #print(gym.envs.registry)
 
 env = gym.make('ofc-v0')
-observation, info = env.reset()
-print(observation)
-env.render()
+# observation, info = env.reset()
+# print(observation)
+# env.render()
 
-# import treys
-# from treys import Card
-#
-# deck = treys.Deck()
-# suits = set()
-# ranks = set()
-# cards = deck.draw(n=52)
-# for card in cards:
-#     ranks.add(Card.get_rank_int(card))
-#     suits.add(Card.get_suit_int(card))
-# print(ranks)
-# print(suits)
+
+from stable_baselines3.common.env_checker import check_env
+# If the environment don't follow the interface, an error will be thrown
+# check_env(env, warn=True)
+
+from stable_baselines3 import PPO
+model = PPO("MlpPolicy", env, verbose=2)
+model.learn(total_timesteps=50_000, progress_bar=False)
+
+vec_env = model.get_env()
+obs = vec_env.reset()
+for i in range(1000):
+    action, _states = model.predict(obs, deterministic=True)
+    obs, reward, done, info = vec_env.step(action)
+    vec_env.render()
+    # VecEnv resets automatically
+    # if done:
+    #   obs = env.reset()
+
+env.close()
+
 
 
 # sp = gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])

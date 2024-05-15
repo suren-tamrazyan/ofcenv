@@ -1,8 +1,10 @@
 from typing import SupportsFloat, Any
 
 import gymnasium as gym
+import numpy as np
 
-from ofc_encoder import player_to_tensor, action_to_dict
+from ofc_encoder import player_to_tensor_of_rank_suit, action_to_dict, player_to_tensor_of_binary_card_matrix, \
+    is_legal_action
 from ofcgame import OfcGame
 from ofc_agent import OfcRandomAgent
 
@@ -19,13 +21,20 @@ class OfcEnv(gym.Env):
         self.game = OfcGame(game_id=0, max_player=self.max_player, button=self.button_ind, hero=0)
         self.opponent1 = OfcRandomAgent()
         # self.opponent2 = OfcRandomAgent()
-        self.observation_space = gym.spaces.Tuple((gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]]),
-                                                  gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])))  # (hero, opponent1); maybe MultiDiscrete([max_player, 2, 5, 5])?
+        # self.observation_space = gym.spaces.Tuple((gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]]),
+        #                                           gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])))  # (hero, opponent1); maybe MultiDiscrete([max_player, 2, 5, 5])?
+        # self.observation_space = gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])
+        one_hot_matrix_shape = (5, 4, 13)
+        # self.observation_space = gym.spaces.Box(low=0, high=1, shape=one_hot_matrix_shape, dtype=np.uint8)
+        self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
         self.action_space = gym.spaces.Discrete(297)
+        self.ILLEGAL_ACTION_PENALTY = -10
+        self.render_mode = 'human'
 
     def _get_obs(self):
-        # cast to multidiscrete
-        return player_to_tensor(self.game.hero_player(), True), player_to_tensor(self.game.players[1], True)
+        # return player_to_tensor(self.game.hero_player(), True), player_to_tensor(self.game.players[1], True)
+        # return player_to_tensor_of_rank_suit(self.game.hero_player(), True)
+        return player_to_tensor_of_binary_card_matrix(self.game.hero_player())
 
     def _get_info(self):
         return {}
@@ -38,8 +47,11 @@ class OfcEnv(gym.Env):
         return self._get_obs(), self._get_info()
 
     def step(self, action):
+        if not is_legal_action(self.game.hero_player(), action):
+            return self._get_obs(), self.ILLEGAL_ACTION_PENALTY, True, False, self._get_info()
         self.game.play(action_to_dict(action, self.game.hero_player()))
-        self.game.play(self.opponent1.make_move(self.game.current_player()))
+        if not self.game.is_game_over():
+            self.game.play(self.opponent1.make_move(self.game.current_player()))
         reward = 0
         game_over = False
         if self.game.is_game_over():

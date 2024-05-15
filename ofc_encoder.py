@@ -27,6 +27,14 @@ def legal_actions(player):
     else:
         return [i for i in range(243, len(ACTION_SPACE)) if check_box(ACTION_SPACE[i], box_counts)]
 
+def is_legal_action(player, action_id):
+    box_counts = (len(player.front), len(player.middle), len(player.back))
+    is_first_round = len(player.to_play) == 5
+    if is_first_round:
+        return action_id < 243 and check_box(ACTION_SPACE[action_id], box_counts)
+    else:
+        return 243 <= action_id < len(ACTION_SPACE) and check_box(ACTION_SPACE[action_id], box_counts)
+
 
 # transform action to dict for OfcGame.play()
 def action_to_dict(action_id, player):
@@ -35,6 +43,12 @@ def action_to_dict(action_id, player):
         result.setdefault(k, []).append(v)
     return result
 
+def action_dict_to_pretty_str(action_dict):
+    result = {}
+    for key, value in action_dict.items():
+        pretty_values = [Card.int_to_pretty_str(item) for item in value]
+        result[key] = pretty_values
+    return result
 
 MATRIX_WIDTH = 5
 
@@ -70,7 +84,7 @@ def game_state_to_tensor(game):
     return result
 
 
-def player_to_tensor(player, dense):
+def player_to_tensor_of_rank_suit(player, dense):
     # ranks
     ranks = np.row_stack(player_to_rank_matrix(player))
     if dense:
@@ -85,3 +99,30 @@ def player_to_tensor(player, dense):
     result = np.stack([(ranks, suits)], axis=0)
     result = np.concatenate(result, axis=0)
     return result
+
+
+def get_suit_int(card):
+    suit = Card.get_suit_int(card)
+    if suit == 8:
+        suit = 3
+    suit -= 1
+    return suit
+
+def get_rank_int(card):
+    return Card.get_rank_int(card)
+
+def cards_to_one_hot(cards):
+    one_hot_matrix = np.zeros((4, 13))
+    for card in cards:
+        rank_int = get_rank_int(card)
+        suit_int = get_suit_int(card)
+        one_hot_matrix[suit_int, rank_int] = 1
+    return one_hot_matrix
+
+def player_to_tensor_of_binary_card_matrix(player):
+    front_tensor = np.array([cards_to_one_hot(player.front)])
+    middle_tensor = np.array([cards_to_one_hot(player.middle)])
+    back_tensor = np.array([cards_to_one_hot(player.back)])
+    dead_tensor = np.array([cards_to_one_hot(player.dead)])
+    to_play_tensor = np.array([cards_to_one_hot(player.to_play)])
+    return np.concatenate((front_tensor, middle_tensor, back_tensor, dead_tensor, to_play_tensor), axis=0)
