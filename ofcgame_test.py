@@ -3,6 +3,7 @@ import time
 import numpy as np
 from treys import Card, Deck
 
+import ofc_encoder
 from ofc_agent import OfcRandomAgent
 from ofc_encoder import game_state_to_tensor, player_to_tensor_of_rank_suit, get_rank_int, get_suit_int, \
     player_to_tensor_of_binary_card_matrix, ACTION_SPACE
@@ -39,6 +40,12 @@ def random_test(print_game=False):
         print(hero_one_hot_matrix)
         print('hero_one_hot_matrix shape:', hero_one_hot_matrix.shape)
         print('hh: ', game.hh)
+        print('game opened_cards:', [Card.int_to_pretty_str(item) for item in game.opened_cards()])
+        rest_cards_matrix = ofc_encoder.rest_cards_to_one_hot(game.opened_cards())
+        print('rest cards matrix:\n', rest_cards_matrix)
+        rest_cards_matrix_expanded = rest_cards_matrix[np.newaxis, :, :]
+        union_encode = np.vstack((hero_one_hot_matrix, rest_cards_matrix_expanded))
+        print('union_encode:\n', union_encode)
     # deck = Deck.GetFullDeck()
     # for i in deck:
     #     print(Card.get_rank_int(i))

@@ -119,6 +119,14 @@ def cards_to_one_hot(cards):
         one_hot_matrix[suit_int, rank_int] = 1
     return one_hot_matrix
 
+def rest_cards_to_one_hot(except_cards):
+    one_hot_matrix = np.ones((4, 13))
+    for card in except_cards:
+        rank_int = get_rank_int(card)
+        suit_int = get_suit_int(card)
+        one_hot_matrix[suit_int, rank_int] = 0
+    return one_hot_matrix
+
 def player_to_tensor_of_binary_card_matrix(player):
     front_tensor = np.array([cards_to_one_hot(player.front)])
     middle_tensor = np.array([cards_to_one_hot(player.middle)])

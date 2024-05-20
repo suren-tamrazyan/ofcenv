@@ -19,12 +19,13 @@ from stable_baselines3.common.env_checker import check_env
 # check_env(env, warn=True)
 
 from stable_baselines3 import PPO
-model = PPO("MlpPolicy", env, verbose=2)
+policy_kwargs = dict(net_arch=[256, 256, 128, 256, 256])
+model = PPO("MlpPolicy", env, policy_kwargs=policy_kwargs, verbose=1)
 model.learn(total_timesteps=50_000, progress_bar=False)
 
 vec_env = model.get_env()
 obs = vec_env.reset()
-for i in range(1000):
+for i in range(10):
     action, _states = model.predict(obs, deterministic=True)
     obs, reward, done, info = vec_env.step(action)
     vec_env.render()
