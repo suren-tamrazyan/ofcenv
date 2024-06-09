@@ -20,9 +20,6 @@ class OfcEnv(gym.Env):
         self.game = OfcGame(game_id=0, max_player=self.max_player, button=self.button_ind, hero=0)
         self.opponent1 = OfcRandomAgent()
         # self.opponent2 = OfcRandomAgent()
-        # self.observation_space = gym.spaces.Tuple((gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]]),
-        #                                           gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])))  # (hero, opponent1); maybe MultiDiscrete([max_player, 2, 5, 5])?
-        # self.observation_space = gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])
         one_hot_matrix_shape = (6, 4, 13)
         # self.observation_space = gym.spaces.Box(low=0, high=1, shape=one_hot_matrix_shape, dtype=np.uint8)
         self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
