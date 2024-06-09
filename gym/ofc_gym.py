@@ -20,7 +20,7 @@ class OfcEnv(gym.Env):
         self.game = OfcGame(game_id=0, max_player=self.max_player, button=self.button_ind, hero=0)
         self.opponent1 = OfcRandomAgent()
         # self.opponent2 = OfcRandomAgent()
-        one_hot_matrix_shape = (6, 4, 13)
+        one_hot_matrix_shape = (12, 4, 13)
         # self.observation_space = gym.spaces.Box(low=0, high=1, shape=one_hot_matrix_shape, dtype=np.uint8)
         self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
         self.action_space = gym.spaces.Discrete(297)
@@ -30,10 +30,21 @@ class OfcEnv(gym.Env):
     def _get_obs(self):
         # return player_to_tensor(self.game.hero_player(), True), player_to_tensor(self.game.players[1], True)
         # return player_to_tensor_of_rank_suit(self.game.hero_player(), True)
-        hero_one_hot_matrix = player_to_tensor_of_binary_card_matrix(self.game.hero_player())
+        hero_one_hot_matrix = player_to_tensor_of_binary_card_matrix(self.game.hero_player(), True)
+
+        opps = []
+        for i in range(len(self.game.players)):
+            if i != self.game.hero:
+                opps.append(i)
+        opp1_one_hot_matrix = player_to_tensor_of_binary_card_matrix(self.game.players[opps[0]], False)
+        if len(opps) > 1:
+            opp2_one_hot_matrix = player_to_tensor_of_binary_card_matrix(self.game.players[opps[1]], False)
+        else:
+            opp2_one_hot_matrix = np.zeros((3, 4, 13))
+
         rest_cards_matrix = rest_cards_to_one_hot(self.game.opened_cards())
         rest_cards_matrix_expanded = rest_cards_matrix[np.newaxis, :, :]
-        union_encode = np.vstack((hero_one_hot_matrix, rest_cards_matrix_expanded))
+        union_encode = np.vstack((hero_one_hot_matrix, opp1_one_hot_matrix, opp2_one_hot_matrix, rest_cards_matrix_expanded))
         return union_encode
 
     def _get_info(self):

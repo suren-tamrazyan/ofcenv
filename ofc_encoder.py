@@ -127,10 +127,13 @@ def rest_cards_to_one_hot(except_cards):
         one_hot_matrix[suit_int, rank_int] = 0
     return one_hot_matrix
 
-def player_to_tensor_of_binary_card_matrix(player):
+def player_to_tensor_of_binary_card_matrix(player, is_hero):
     front_tensor = np.array([cards_to_one_hot(player.front)])
     middle_tensor = np.array([cards_to_one_hot(player.middle)])
     back_tensor = np.array([cards_to_one_hot(player.back)])
     dead_tensor = np.array([cards_to_one_hot(player.dead)])
     to_play_tensor = np.array([cards_to_one_hot(player.to_play)])
-    return np.concatenate((front_tensor, middle_tensor, back_tensor, dead_tensor, to_play_tensor), axis=0)
+    if is_hero:
+        return np.concatenate((front_tensor, middle_tensor, back_tensor, dead_tensor, to_play_tensor), axis=0)
+    else:
+        return np.concatenate((front_tensor, middle_tensor, back_tensor), axis=0)

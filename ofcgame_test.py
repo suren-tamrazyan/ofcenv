@@ -27,7 +27,17 @@ def random_test(print_game=False):
 
     game_state_tensor = game_state_to_tensor(game)
     hero_tensor = player_to_tensor_of_rank_suit(game.players[game.hero], False)
-    hero_one_hot_matrix = player_to_tensor_of_binary_card_matrix(game.players[game.hero])
+    hero_one_hot_matrix = player_to_tensor_of_binary_card_matrix(game.players[game.hero], True)
+    opps = []
+    for i in range(len(game.players)):
+        if i != game.hero:
+            opps.append(i)
+    print('Opps:', opps)
+    opp1_one_hot_matrix = player_to_tensor_of_binary_card_matrix(game.players[opps[0]], False)
+    if len(opps) > 1:
+        opp2_one_hot_matrix = player_to_tensor_of_binary_card_matrix(game.players[opps[1]], False)
+    else:
+        opp2_one_hot_matrix = np.zeros((3, 4, 13))
     if print_game:
         print(game.hero_player().calc_score_single())
         print(game_state_tensor)
@@ -39,13 +49,20 @@ def random_test(print_game=False):
         print('Hero one hot matrix:')
         print(hero_one_hot_matrix)
         print('hero_one_hot_matrix shape:', hero_one_hot_matrix.shape)
+        print('Opp1 one hot matrix:')
+        print(opp1_one_hot_matrix)
+        print('opp1_one_hot_matrix shape:', opp1_one_hot_matrix.shape)
+        print('Opp2 one hot matrix:')
+        print(opp2_one_hot_matrix)
+        print('opp2_one_hot_matrix shape:', opp2_one_hot_matrix.shape)
         print('hh: ', game.hh)
         print('game opened_cards:', [Card.int_to_pretty_str(item) for item in game.opened_cards()])
         rest_cards_matrix = ofc_encoder.rest_cards_to_one_hot(game.opened_cards())
         print('rest cards matrix:\n', rest_cards_matrix)
         rest_cards_matrix_expanded = rest_cards_matrix[np.newaxis, :, :]
-        union_encode = np.vstack((hero_one_hot_matrix, rest_cards_matrix_expanded))
+        union_encode = np.vstack((hero_one_hot_matrix, opp1_one_hot_matrix, opp2_one_hot_matrix, rest_cards_matrix_expanded))
         print('union_encode:\n', union_encode)
+        print('union_encode shape:', union_encode.shape)
     # deck = Deck.GetFullDeck()
     # for i in deck:
     #     print(Card.get_rank_int(i))
