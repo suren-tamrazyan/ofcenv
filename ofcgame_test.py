@@ -63,6 +63,12 @@ def random_test(print_game=False):
         union_encode = np.vstack((hero_one_hot_matrix, opp1_one_hot_matrix, opp2_one_hot_matrix, rest_cards_matrix_expanded))
         print('union_encode:\n', union_encode)
         print('union_encode shape:', union_encode.shape)
+        print("rest_cards_summary:\n", ofc_encoder.rest_cards_summary(game.opened_cards()))
+        vectorized_normalize = np.vectorize(ofc_encoder.normalize_data_0_1)
+        rest_cards_suits, rest_cards_ranks = ofc_encoder.rest_cards_summary(game.opened_cards())
+        rest_cards_suits_norm = vectorized_normalize(rest_cards_suits, 0, 13)
+        rest_cards_ranks_norm = vectorized_normalize(rest_cards_ranks, 0, 4)
+        print("rest_cards_summary_norm:\n", rest_cards_suits_norm, rest_cards_ranks_norm)
     # deck = Deck.GetFullDeck()
     # for i in deck:
     #     print(Card.get_rank_int(i))

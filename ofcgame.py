@@ -219,13 +219,18 @@ class OfcGameBase:
 
     def opened_cards(self):
         result = []
+        hero = self.players[self.hero]
         for player in self.players:
             result += player.front
             result += player.middle
             result += player.back
-            result += player.dead
-            result += player.to_play
+            if player == hero:
+                result += player.dead
+                result += player.to_play
         return result
+
+    def summary(self):
+        return self.round
 
 class OfcGame(OfcGameBase):
     def __init__(self, game_id, max_player, button, hero=0):

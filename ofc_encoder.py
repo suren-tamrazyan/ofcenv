@@ -137,3 +137,16 @@ def player_to_tensor_of_binary_card_matrix(player, is_hero):
         return np.concatenate((front_tensor, middle_tensor, back_tensor, dead_tensor, to_play_tensor), axis=0)
     else:
         return np.concatenate((front_tensor, middle_tensor, back_tensor), axis=0)
+
+def rest_cards_summary(except_cards):
+    suit_count = np.full(4, 13)
+    rank_count = np.full(13, 4)
+    joker_count = np.full(1, 2)
+    for card in except_cards:
+        suit_count[get_suit_int(card)] -= 1
+        rank_count[get_rank_int(card)] -= 1
+    # return np.concatenate((suit_count, rank_count))
+    return suit_count, rank_count
+
+def normalize_data_0_1(data, data_min, data_max):
+    return (data - data_min) / (data_max - data_min)
