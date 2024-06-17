@@ -30,7 +30,7 @@ class OfcEnv(gym.Env):
             })
         else:
             self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
-        self.action_space = gym.spaces.Discrete(297)
+        self.action_space = gym.spaces.Discrete(259)
         self.ILLEGAL_ACTION_PENALTY = -10
         self.render_mode = 'human'
 
@@ -80,7 +80,7 @@ class OfcEnv(gym.Env):
     def step(self, action):
         if not is_legal_action(self.game.hero_player(), action):
             return self._get_obs(), self.ILLEGAL_ACTION_PENALTY, True, False, self._get_info()
-        self.game.play(action_to_dict(action, self.game.hero_player()))
+        self.game.play(action_to_dict(action, self.game.hero_player().to_play))
         if not self.game.is_game_over():
             self.game.play(self.opponent1.make_move(self.game.current_player()))
         reward = 0

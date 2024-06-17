@@ -37,9 +37,9 @@ def is_legal_action(player, action_id):
 
 
 # transform action to dict for OfcGame.play()
-def action_to_dict(action_id, player):
+def action_to_dict(action_id, to_play):
     result = {}
-    for k, v in zip(ACTION_SPACE[action_id], player.to_play):
+    for k, v in zip(ACTION_SPACE[action_id], to_play):
         result.setdefault(k, []).append(v)
     return result
 
@@ -102,6 +102,7 @@ def player_to_tensor_of_rank_suit(player, dense):
 
 
 def get_suit_int(card):
+    # spades: 0, hearts: 1, clubs: 2, diamonds: 3
     suit = Card.get_suit_int(card)
     if suit == 8:
         suit = 3
@@ -109,6 +110,7 @@ def get_suit_int(card):
     return suit
 
 def get_rank_int(card):
+    # 2: 0, 3: 1, ..., A: 12
     return Card.get_rank_int(card)
 
 def cards_to_one_hot(cards):
