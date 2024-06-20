@@ -14,7 +14,7 @@ import torch as th
 import torch.nn as nn
 from gymnasium import spaces
 
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, DQN, A2C
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
@@ -65,7 +65,11 @@ policy_kwargs = dict(
     features_extractor_kwargs=dict(features_dim=128),
 )
 model = PPO("CnnPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log="./tb_logs/")
-model.learn(100_000)
+# model = PPO.load("./expert_hh/ppo_ofc_pineapple", env=env)
+
+# model = DQN("CnnPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log="./tb_logs/")
+# model = A2C("CnnPolicy", env, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log="./tb_logs/")
+model.learn(100_000, tb_log_name="PPO CNN 2")
 
 vec_env = model.get_env()
 obs = vec_env.reset()

@@ -1,3 +1,4 @@
+import itertools
 import time
 
 import numpy as np
@@ -69,17 +70,44 @@ def random_test(print_game=False):
         rest_cards_suits_norm = vectorized_normalize(rest_cards_suits, 0, 13)
         rest_cards_ranks_norm = vectorized_normalize(rest_cards_ranks, 0, 4)
         print("rest_cards_summary_norm:\n", rest_cards_suits_norm, rest_cards_ranks_norm)
-    # deck = Deck.GetFullDeck()
-    # for i in deck:
-    #     print(Card.get_rank_int(i))
+
+
 
 
 # time_start = time.time()
 # for i in range(10000):
 #     random_test()
 # print("--- %s seconds ---" % (time.time() - time_start))
-random_test(print_game=True)
 
+# random_test(print_game=True)
+
+deck = Deck.GetFullDeck()
+# for i in deck:
+#     print(Card.int_to_pretty_str(i), Card.get_suit_int(i), Card.get_rank_int(i), ofc_encoder.get_suit_int(i))
+
+
+# to_play = [deck[0], deck[1], deck[2], deck[3], deck[4]]
+# print(ofc_encoder.action_dict_to_pretty_str(ofc_encoder.action_to_dict(110, to_play)))
+for i in range(259):
+    tup = ACTION_SPACE[i]
+    s = ""
+    for t in tup:
+        s += t;
+    print('actionSpace.put("'+s+'", '+str(i)+');')
+    # print(s)
+
+# first_round_box = ["f", "m", "b"]
+# non_first_round_box = ["f", "m", "b", "d"]
+# test1 = list(itertools.product(first_round_box, repeat=5))
+# first_round_arrangement = itertools.product(first_round_box, repeat=5)
+# first_round_arrangement = list(filter(lambda t: sum(1 for s in t if s == 'f') <= 3, first_round_arrangement))
+# test2 = list(itertools.product(non_first_round_box, repeat=3))
+# non_first_round_arrangement = itertools.product(non_first_round_box, repeat=3)
+# non_first_round_arrangement = list(filter(lambda t: sum(1 for s in t if s == 'd') == 1, non_first_round_arrangement))
+# print(test1)
+# print(first_round_arrangement)
+# print(test2)
+# print(non_first_round_arrangement)
 
 # import treys
 #
