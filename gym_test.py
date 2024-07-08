@@ -8,11 +8,12 @@ register(
 
 #print(gym.envs.registry)
 
-env = gym.make('ofc-v0')
+# env = gym.make('ofc-v0', special_for_stochastic_muzero=True)
 # observation, info = env.reset()
 # print(observation)
 # env.render()
-
+#
+# exit(0)
 
 from stable_baselines3.common.env_checker import check_env
 # If the environment don't follow the interface, an error will be thrown

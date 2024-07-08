@@ -30,7 +30,7 @@ class OfcEnv(gym.Env):
             })
         else:
             if special_for_stochastic_muzero:
-                self.observation_space = gym.spaces.Box(one_hot_matrix_shape)
+                self.observation_space = gym.spaces.Box(low=0, high=1, shape=one_hot_matrix_shape)
             else:
                 self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
         self.action_space = gym.spaces.Discrete(259)
