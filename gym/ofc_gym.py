@@ -12,7 +12,7 @@ from ofc_agent import OfcRandomAgent
 class OfcEnv(gym.Env):
     metadata = {'render_modes': ['human'], 'render_fps': 1}
 
-    def __init__(self, max_player=2, observe_summary=False):
+    def __init__(self, max_player=2, observe_summary=False, special_for_stochastic_muzero=False):
         self.button_ind = 1
         self.max_player = max_player
         self.observe_summary = observe_summary
@@ -29,7 +29,10 @@ class OfcEnv(gym.Env):
                 'summary': gym.spaces.Box(low=0, high=1, shape=(self.summary_dim,), dtype=np.float64)
             })
         else:
-            self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
+            if special_for_stochastic_muzero:
+                self.observation_space = gym.spaces.Box(one_hot_matrix_shape)
+            else:
+                self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
         self.action_space = gym.spaces.Discrete(259)
         self.ILLEGAL_ACTION_PENALTY = -10
         self.render_mode = 'human'
