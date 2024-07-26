@@ -8,7 +8,7 @@ register(
 
 #print(gym.envs.registry)
 
-# env = gym.make('ofc-v0', special_for_stochastic_muzero=True)
+env = gym.make('ofc-v0', special_for_stochastic_muzero=True)
 # observation, info = env.reset()
 # print(observation)
 # env.render()

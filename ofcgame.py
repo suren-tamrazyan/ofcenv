@@ -194,14 +194,22 @@ class OfcGameBase:
         if need_transit_round and self.round < 5:
             self._next_round()
 
-    def calc_hero_score(self):
+    def calc_player_score(self, player):
         result = 0
-        hero = self.players[self.hero]
-        for player in self.players:
-            if player == hero:
+        for opponent in self.players:
+            if opponent == player:
                 continue
-            result += hero.calc_score_against(player)
+            result += player.calc_score_against(opponent)
         return result
+
+    def calc_hero_score(self):
+        return self.calc_player_score(self, self.players[self.hero])
+
+    def get_payoffs(self):
+        if self.is_game_over():
+            return [self.calc_player_score(pl) for pl in self.players]
+        else:
+            return [0 for _ in self.players]
 
     def __str__(self):
         result = "---------------- Game #" + str(self.game_id) + "; round " + str(
@@ -233,9 +241,9 @@ class OfcGameBase:
         return self.round
 
 class OfcGame(OfcGameBase):
-    def __init__(self, game_id, max_player, button, hero=0):
+    def __init__(self, game_id, max_player, button, hero=0, seed=None):
         super().__init__(game_id, max_player, button, hero)
-        self.deck = Deck()
+        self.deck = Deck(seed)
         for player in self.players:
             if player.fantasy:
                 player.deal(self.deck.draw(14))

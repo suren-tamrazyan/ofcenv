@@ -1,9 +1,12 @@
+import os
 import pickle
 from treys import Card, Evaluator
 from treys.lookup import LookupTable
 
+ofcenv_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(ofcenv_dir, 'res', 'front_lookup.p')
 
-FRONT_LOOKUP = pickle.load(open("res/front_lookup.p", "rb"))
+FRONT_LOOKUP = pickle.load(open(file_path, "rb"))
 
 
 class OFCEvaluator(Evaluator):

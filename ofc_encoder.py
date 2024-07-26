@@ -1,10 +1,14 @@
+import os
 import pickle
 
 import numpy as np
 from treys import Card
 
 # load the action_space
-with open('res/action_space.p', 'rb') as f:
+# with open('res/action_space.p', 'rb') as f:
+ofcenv_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(ofcenv_dir, 'res', 'action_space.p')
+with open(file_path, 'rb') as f:
     ACTION_SPACE = pickle.load(f)
 
 
