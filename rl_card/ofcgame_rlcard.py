@@ -24,7 +24,8 @@ class OfcGameRLCard:
         ''' Specifiy some game specific parameters, such as number of players
         '''
         self.num_players = game_config['game_num_players']
-        self.seed = game_config['seed']
+        if 'seed' in game_config:
+            self.seed = game_config['seed']
 
     def get_num_players(self):
         ''' Return the number of players in ofc
