@@ -90,7 +90,7 @@ class OfcGameRLCard:
         rest_cards_matrix_expanded = rest_cards_matrix[np.newaxis, :, :]
         board_encode = np.vstack((hero_one_hot_matrix, opp1_one_hot_matrix, opp2_one_hot_matrix, rest_cards_matrix_expanded))
         legal_actions = ofc_encoder.legal_actions(hero_player)
-        legal_actions_str = [ofc_encoder.action_dict_to_pretty_str(ofc_encoder.action_to_dict(a, hero_player.to_play)) for a in legal_actions]
+        legal_actions_str = [str(ofc_encoder.action_dict_to_pretty_str(ofc_encoder.action_to_dict(a, hero_player.to_play))) for a in legal_actions]
         return {'board_from_player': board_encode, 'legal_actions': legal_actions, 'legal_actions_str': legal_actions_str}
 
     def step(self, action):

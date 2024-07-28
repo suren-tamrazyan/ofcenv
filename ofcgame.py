@@ -129,7 +129,7 @@ class OfcPlayer:
         won = 0
 
         won += self.calculate_street(self.front, other.front)
-        won += self.calculate_street(self.middle, other.mid)
+        won += self.calculate_street(self.middle, other.middle)
         won += self.calculate_street(self.back, other.back)
 
         if won in [3, -3]:  # Scoop, one way or the other

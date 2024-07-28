@@ -27,17 +27,17 @@ def legal_actions(player):
     box_counts = (len(player.front), len(player.middle), len(player.back))
     is_first_round = len(player.to_play) == 5
     if is_first_round:
-        return [i for i in range(243) if check_box(ACTION_SPACE[i], box_counts)]
+        return [i for i in range(232) if check_box(ACTION_SPACE[i], box_counts)]
     else:
-        return [i for i in range(243, len(ACTION_SPACE)) if check_box(ACTION_SPACE[i], box_counts)]
+        return [i for i in range(232, len(ACTION_SPACE)) if check_box(ACTION_SPACE[i], box_counts)]
 
 def is_legal_action(player, action_id):
     box_counts = (len(player.front), len(player.middle), len(player.back))
     is_first_round = len(player.to_play) == 5
     if is_first_round:
-        return action_id < 243 and check_box(ACTION_SPACE[action_id], box_counts)
+        return action_id < 232 and check_box(ACTION_SPACE[action_id], box_counts)
     else:
-        return 243 <= action_id < len(ACTION_SPACE) and check_box(ACTION_SPACE[action_id], box_counts)
+        return 232 <= action_id < len(ACTION_SPACE) and check_box(ACTION_SPACE[action_id], box_counts)
 
 
 # transform action to dict for OfcGame.play()
