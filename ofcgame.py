@@ -203,7 +203,7 @@ class OfcGameBase:
         return result
 
     def calc_hero_score(self):
-        return self.calc_player_score(self, self.players[self.hero])
+        return self.calc_player_score(self.players[self.hero])
 
     def get_payoffs(self):
         if self.is_game_over():
