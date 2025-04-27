@@ -4,7 +4,7 @@ import gymnasium as gym
 import numpy as np
 
 from ofc_encoder import player_to_tensor_of_rank_suit, action_to_dict, player_to_tensor_of_binary_card_matrix, \
-    is_legal_action, rest_cards_to_one_hot, rest_cards_summary, normalize_data_0_1
+    is_legal_action, rest_cards_to_one_hot, rest_cards_summary, normalize_data_0_1, legal_actions
 from ofcgame import OfcGame
 from ofc_agent import OfcRandomAgent
 
@@ -26,14 +26,19 @@ class OfcEnv(gym.Env):
         if self.observe_summary:
             self.observation_space = gym.spaces.Dict({
                 'board': gym.spaces.MultiBinary(one_hot_matrix_shape),
-                'summary': gym.spaces.Box(low=0, high=1, shape=(self.summary_dim,), dtype=np.float64)
+                'summary': gym.spaces.Box(low=0, high=1, shape=(self.summary_dim,), dtype=np.float64),
+                'action_mask': gym.spaces.MultiBinary(259)  # Добавляем маску
             })
         else:
             if special_for_stochastic_muzero:
                 self.observation_space = gym.spaces.Box(low=0, high=1, shape=one_hot_matrix_shape)
             else:
-                self.observation_space = gym.spaces.MultiBinary(one_hot_matrix_shape)
+                self.observation_space = gym.spaces.Dict({
+                    'observation': gym.spaces.MultiBinary(one_hot_matrix_shape),
+                    'action_mask': gym.spaces.MultiBinary(259)
+                })
         self.action_space = gym.spaces.Discrete(259)
+        self.legal_actions_mask = np.ones(259, dtype=bool)
         self.ILLEGAL_ACTION_PENALTY = -10
         self.render_mode = 'human'
 
@@ -55,8 +60,13 @@ class OfcEnv(gym.Env):
         rest_cards_matrix = rest_cards_to_one_hot(self.game.opened_cards())
         rest_cards_matrix_expanded = rest_cards_matrix[np.newaxis, :, :]
         board_encode = np.vstack((hero_one_hot_matrix, opp1_one_hot_matrix, opp2_one_hot_matrix, rest_cards_matrix_expanded))
+        # Получаем маску действий
+        action_mask = self.get_action_mask()
         if not self.observe_summary:
-            return board_encode
+            return {
+                'observation': board_encode,
+                'action_mask': action_mask  # Добавляем маску
+            }
         else:
             # game summary
             game_sum_norm = np.array([normalize_data_0_1(self.game.round, 1, 5), normalize_data_0_1(len(self.game.hero_player().front), 0, 3), normalize_data_0_1(len(self.game.hero_player().middle), 0, 5), normalize_data_0_1(len(self.game.hero_player().back), 0, 5)])
@@ -67,7 +77,8 @@ class OfcEnv(gym.Env):
             summary_encode = np.concatenate((game_sum_norm, rest_cards_suits_norm, rest_cards_ranks_norm))
             return {
                 'board': board_encode,
-                'summary': summary_encode
+                'summary': summary_encode,
+                'action_mask': action_mask  # Добавляем маску
             }
 
     def _get_info(self):
@@ -79,6 +90,13 @@ class OfcEnv(gym.Env):
 
         self.game = OfcGame(game_id=0, max_player=self.max_player, button=self.button_ind, hero=0)
         return self._get_obs(), self._get_info()
+
+    def get_action_mask(self):
+        player = self.game.hero_player()
+        mask = np.zeros(259, dtype=bool)
+        legal_acts = legal_actions(player)  # Из ofc_encoder.py
+        mask[legal_acts] = True
+        return mask
 
     def step(self, action):
         if not is_legal_action(self.game.hero_player(), action):

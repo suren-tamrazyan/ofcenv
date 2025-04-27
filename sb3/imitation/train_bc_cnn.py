@@ -32,7 +32,7 @@ def train_bc():
     policy = CNNPolicy(
         observation_space=env.observation_space,
         action_space=env.action_space,
-        lr_schedule=lambda _: 3e-4  # Простой планировщик с постоянной скоростью обучения
+        lr_schedule=lambda _: 5e-2  # Простой планировщик с постоянной скоростью обучения
     )
     
     # Создаем BC тренер с CNN политикой
@@ -41,7 +41,8 @@ def train_bc():
         action_space=env.action_space,
         demonstrations=transitions,
         policy=policy,
-        rng=np.random.default_rng()
+        rng=np.random.default_rng(),
+        batch_size=128
     )
     
     # Оцениваем до обучения
@@ -49,10 +50,10 @@ def train_bc():
     print(f"Reward before training: {reward_before_training}")
     
     # Обучаем модель
-    bc_trainer.train(n_epochs=50)
+    bc_trainer.train(n_epochs=10, progress_bar=True)
     
     # Оцениваем после обучения
-    reward_after_training, _ = evaluate_policy(bc_trainer.policy, env, 10)
+    reward_after_training, _ = evaluate_policy(bc_trainer.policy, env, 10, render=True)
     print(f"Reward after training: {reward_after_training}")
     
     # Сохраняем модель

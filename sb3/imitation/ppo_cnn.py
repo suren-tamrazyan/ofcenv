@@ -10,6 +10,7 @@ from imitation.rewards.reward_nets import BasicShapedRewardNet
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from gym.ofc_gym import OfcEnv
+from sb3.imitation.expert_data_loader import load_expert_trajectories
 
 # register(
 #     id='ofc-v0',
@@ -105,17 +106,21 @@ def process_data(data):
         infos.extend(episode_infos)
     return np.array(observations), np.array(actions), np.array(rewards), np.array(next_observations), np.array(dones), infos
 
-file_path = './expert_hh/first.json'
-data = load_game_history(file_path)
-observations, actions, rewards, next_observations, dones, infos = process_data(data)
-
-transitions = types.Transitions(
-    obs=observations,
-    acts=actions,
-    next_obs=next_observations,
-    dones=dones,
-    infos=infos
-)
+file_path = './expert_hh/bit.json'
+# data = load_game_history(file_path)
+# observations, actions, rewards, next_observations, dones, infos = process_data(data)
+#
+# transitions = types.Transitions(
+#     obs=observations,
+#     acts=actions,
+#     next_obs=next_observations,
+#     dones=dones,
+#     infos=infos
+# )
+# Загружаем экспертные данные
+expert_trajectories = load_expert_trajectories(file_path)
+# Преобразуем траектории в transitions
+transitions = rollout.flatten_trajectories(expert_trajectories)
 
 # Создание сети вознаграждений
 reward_net = BasicShapedRewardNet(env.observation_space, env.action_space)
@@ -153,7 +158,7 @@ bc_trainer = BC(
     rng=rng
  )
 bc_trainer.train(n_epochs=50)
-bc_trainer.policy.save("./expert_hh/a2c_ofc_pineapple_bc")
+bc_trainer.policy.save("./expert_hh/model_saves/a2c_ofc_pineapple_bc")
 
 
 vec_env = model.get_env()
