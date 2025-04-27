@@ -1,0 +1,340 @@
+import gymnasium as gym
+import numpy as np
+from typing import Optional, Tuple, Dict, Any, List
+
+# Импортируем из ваших файлов и новой архитектуры
+from ofcgame import OfcGame, OfcPlayer # Убедитесь, что импорты OfcGame корректны
+from ofc_agent import OfcRandomAgent # Ваш случайный агент
+from ofc_neural_network_architecture import (
+    state_to_tensors, OFCActionEncoder, ACTION_SPACE_DIM, MAX_CARDS_IN_ROW,
+    TURN_PHASE_START_ROUND_1, TURN_PHASE_PLACE_1, TURN_PHASE_PLACE_2,
+    TURN_PHASE_PLACE_3, TURN_PHASE_PLACE_4, TURN_PHASE_PLACE_5,
+    TURN_PHASE_DISCARD, MAX_OPPONENTS, CARD_PAD_IDX, MAX_CARDS_TO_PLAY_NN, NUM_CARDS, DISCARD_ACTION_OFFSET
+)
+# from treys import Card # Если нужен где-то еще
+
+class OfcEnvV2(gym.Env):
+    """
+    Версия среды OFC Gym с последовательным принятием решений и
+    пространством действий 6 (3 discard + 3 placement).
+    """
+    metadata = {'render_modes': ['human', 'ansi'], 'render_fps': 1}
+
+    def __init__(self, max_player=2, render_mode=None):
+        super().__init__()
+
+        self.max_player = max_player
+        # Hero всегда игрок 0 для простоты
+        self.hero_idx = 0
+        # Кнопка ходит последней, например, если 2 игрока, кнопка 1
+        self.button_ind = max_player - 1
+
+        self.game: Optional[OfcGame] = None
+        self.opponent_agents = [OfcRandomAgent() for _ in range(max_player - 1)]
+        self.action_encoder = OFCActionEncoder()
+
+        # --- Состояние среды для управления под-шагами ---
+        self.current_turn_phase: float = TURN_PHASE_START_ROUND_1
+        self.active_card_idx: int = -1 # Индекс карты в player.to_play для размещения
+        self.cards_placed_this_turn: int = 0
+
+        # --- Определяем пространства ---
+        self.action_space = gym.spaces.Discrete(ACTION_SPACE_DIM) # 6 действий
+
+        # Определяем observation_space на основе вывода state_to_tensors
+        # Используем Box для тензоров и MultiBinary для маски
+        obs_space_dict = {}
+        # Карты игрока
+        for row, max_len in MAX_CARDS_IN_ROW.items():
+            obs_space_dict[f'player_{row}'] = gym.spaces.Box(low=0, high=NUM_CARDS + 1, shape=(max_len,), dtype=np.int64)
+        # Карты оппонентов (с паддингом)
+        for i in range(MAX_OPPONENTS):
+            for row, max_len in MAX_CARDS_IN_ROW.items():
+                 obs_space_dict[f'opp{i}_{row}'] = gym.spaces.Box(low=0, high=NUM_CARDS + 1, shape=(max_len,), dtype=np.int64)
+        # Карты для игры
+        obs_space_dict['to_play'] = gym.spaces.Box(low=0, high=NUM_CARDS + 1, shape=(MAX_CARDS_TO_PLAY_NN,), dtype=np.int64)
+        # Состояние игры
+        game_state_dim = 5 + MAX_OPPONENTS*2 + NUM_CARDS + 2 # Перепроверьте это число!
+        obs_space_dict['game_state'] = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(game_state_dim,), dtype=np.float32)
+        # Маска действий
+        obs_space_dict['action_mask'] = gym.spaces.MultiBinary(ACTION_SPACE_DIM)
+
+        self.observation_space = gym.spaces.Dict(obs_space_dict)
+
+        # Рендеринг
+        assert render_mode is None or render_mode in self.metadata["render_modes"]
+        self.render_mode = render_mode
+
+    def _get_obs(self) -> Dict[str, np.ndarray]:
+        """Собирает наблюдение для текущего состояния."""
+        if self.game is None:
+            # Случай до первого reset
+             return {k: np.zeros(s.shape, dtype=s.dtype) for k, s in self.observation_space.spaces.items() if k != 'action_mask'}
+
+        # Получаем словарь тензоров PyTorch
+        obs_torch_dict = state_to_tensors(
+            self.game,
+            self.hero_idx,
+            self.current_turn_phase,
+            self.active_card_idx
+        )
+        # Конвертируем в NumPy и добавляем маску
+        obs_numpy_dict = {k: v.numpy() for k, v in obs_torch_dict.items()}
+        obs_numpy_dict['action_mask'] = self._get_action_mask()
+        return obs_numpy_dict
+
+    def _get_info(self) -> Dict[str, Any]:
+        """Возвращает дополнительную информацию (пока не используется)."""
+        return {'round': self.game.round if self.game else 0, 'phase': self.current_turn_phase}
+
+    def _get_action_mask(self) -> np.ndarray:
+        """Генерирует маску легальных действий (размер 6)."""
+        mask = np.zeros(ACTION_SPACE_DIM, dtype=bool)
+        if self.game is None or self.game.is_game_over() or self.game.current_player_idx != self.hero_idx:
+            return mask # Нет доступных действий
+
+        player = self.game.current_player()
+
+        if self.current_turn_phase == TURN_PHASE_DISCARD:
+            # Доступны только действия сброса 0, 1, 2
+            num_to_play = len(player.to_play)
+            if num_to_play == 3: # Убедимся, что есть 3 карты для выбора
+                 mask[DISCARD_ACTION_OFFSET:DISCARD_ACTION_OFFSET + 3] = True
+        else: # Фазы размещения (PLACE_1..5 или START_ROUND_1)
+            # Доступны только действия размещения 3, 4, 5
+            # Проверяем валидность каждого ряда
+            can_place_front = len(player.front) < MAX_CARDS_IN_ROW['front']
+            can_place_middle = len(player.middle) < MAX_CARDS_IN_ROW['middle']
+            can_place_back = len(player.back) < MAX_CARDS_IN_ROW['back']
+
+            # !! ВАЖНО: Добавить проверку правил порядка рядов, если это последний ход !!
+            # Например, если это 13-я карта, нужно проверить player.is_foul() после гипотетического размещения
+            # Для простоты пока опустим эту сложную проверку, но для сильного AI она нужна.
+
+            if can_place_front:
+                mask[self.action_encoder.row_to_action_idx['front']] = True
+            if can_place_middle:
+                mask[self.action_encoder.row_to_action_idx['middle']] = True
+            if can_place_back:
+                mask[self.action_encoder.row_to_action_idx['back']] = True
+
+        return mask
+
+    def reset(self, seed=None, options=None) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+        super().reset(seed=seed) # Важно для воспроизводимости
+
+        self.game = OfcGame(game_id=0, max_player=self.max_player, button=self.button_ind, hero=self.hero_idx, seed=seed)
+
+        # Начальное состояние для героя (раунд 1)
+        self.current_turn_phase = TURN_PHASE_PLACE_1 # Начинаем с размещения 1-й карты
+        self.active_card_idx = 0 # Размещаем первую карту из player.to_play
+        self.cards_placed_this_turn = 0
+
+        # Если первый ход не у героя, проиграть ходы оппонентов
+        self._play_opponent_turns_if_needed()
+
+        observation = self._get_obs()
+        info = self._get_info()
+
+        if self.render_mode == "human":
+            self._render_frame()
+
+        return observation, info
+
+    def step(self, action: int) -> Tuple[Dict[str, np.ndarray], float, bool, bool, Dict[str, Any]]:
+        if self.game is None:
+             raise RuntimeError("Cannot call step() before reset()")
+
+        terminated = False
+        truncated = False # Пока не используем усечение по времени
+        reward = 0.0
+
+        # 1. Проверяем легальность действия для героя
+        current_mask = self._get_action_mask()
+        if not current_mask[action]:
+             # Нелегальное действие - штраф и конец эпизода (terminated=True)
+            reward = -10.0 # Штраф
+            terminated = True
+            # print(f"Warning: Illegal action {action} chosen by agent! Mask: {current_mask}")
+            obs = self._get_obs() # Возвращаем текущее наблюдение
+            info = self._get_info()
+            info['error'] = 'Illegal action chosen'
+            return obs, reward, terminated, truncated, info
+
+        # 2. Выполняем действие героя
+        player = self.game.players[self.hero_idx]
+        decoded_action = self.action_encoder.decode_action(action)
+
+        if decoded_action['type'] == 'discard':
+            card_index = decoded_action['card_index']
+            # Добавляем карту в 'dead' (или просто удаляем, если dead не используется)
+            discarded_card = player.to_play.pop(card_index)
+            player.dead.append(discarded_card) # Предполагаем, что dead существует
+
+            # Переход к фазе размещения первой карты
+            self.current_turn_phase = TURN_PHASE_PLACE_1
+            self.active_card_idx = 0 # Будем размещать первую из оставшихся двух
+            self.cards_placed_this_turn = 0
+
+        elif decoded_action['type'] == 'placement':
+            target_row_name = decoded_action['row'] # 'front', 'middle', или 'back'
+            # Получаем активную карту и удаляем ее из руки
+            if not player.to_play or self.active_card_idx >= len(player.to_play) or self.active_card_idx < 0:
+                 # Эта ситуация не должна возникать при правильной логике фаз
+                 print(f"Error: No active card found for placement! Phase: {self.current_turn_phase}, Active Idx: {self.active_card_idx}, To Play: {player.to_play}")
+                 reward = -20.0 # Большой штраф за ошибку среды
+                 terminated = True
+                 obs = self._get_obs(); info = self._get_info(); info['error'] = 'Internal state error (active card)'
+                 return obs, reward, terminated, truncated, info
+
+            active_card = player.to_play.pop(self.active_card_idx)
+
+            # Добавляем карту в выбранный ряд
+            target_row_list = getattr(player, target_row_name)
+            target_row_list.append(active_card)
+            self.cards_placed_this_turn += 1
+
+            # Определяем, завершен ли ход героя
+            is_hero_turn_complete = False
+            if self.game.round == 1:
+                if self.cards_placed_this_turn == 5:
+                    is_hero_turn_complete = True
+            else: # Раунды 2+ (после сброса размещаем 2 карты)
+                if self.cards_placed_this_turn == 2:
+                    is_hero_turn_complete = True
+
+            if not is_hero_turn_complete:
+                # Переход к размещению следующей карты
+                self.current_turn_phase += 1 # PLACE_1 -> PLACE_2, etc.
+                # active_card_idx обычно остается 0, так как список to_play уменьшился
+                self.active_card_idx = 0 if player.to_play else -1
+            else:
+                # Ход героя завершен, сбрасываем состояние под-шагов
+                self.cards_placed_this_turn = 0
+                self.active_card_idx = -1
+                # Передаем ход следующему игроку в логике OfcGame
+                self.game.current_player_ind = (self.game.current_player_ind + 1) % self.max_player
+                # Если ход перешел к оппоненту, проигрываем его ходы
+                self._play_opponent_turns_if_needed()
+
+
+        # 3. Проверяем, закончилась ли игра ПОСЛЕ возможного хода оппонентов
+        if self.game.is_game_over():
+            terminated = True
+            # Используем calc_hero_score для сравнения с оппонентами
+            reward = self.game.calc_hero_score()
+            # Альтернатива: награда за попадание в фантазию (если не моделируем фантазию)
+            # if not player.fantasy and player.get_royalties(fantasy_score=5) >= 5: # Примерный критерий
+            #    reward += 5 # Бонус за фантазию
+
+        # 4. Определяем следующую фазу для героя, если игра продолжается и ход его
+        if not terminated and self.game.current_player_idx == self.hero_idx:
+             player = self.game.players[self.hero_idx]
+             # Если у героя нет карт to_play, значит нужно раздать
+             if not player.to_play:
+                  # Логика раздачи должна быть в OfcGame при переходе хода/раунда
+                  # Предположим, что OfcGame уже раздал карты, если нужно
+                  pass # Карты должны быть уже разданы
+
+             num_to_play = len(player.to_play)
+             if num_to_play == 5: # Начало раунда 1
+                  self.current_turn_phase = TURN_PHASE_PLACE_1
+                  self.active_card_idx = 0
+             elif num_to_play == 3: # Начало раундов 2+
+                  self.current_turn_phase = TURN_PHASE_DISCARD
+                  self.active_card_idx = -1 # Нет активной карты при сбросе
+             elif num_to_play == 0 and not self.game.is_game_over():
+                  # Ситуация, когда ход героя, но карт нет - ошибка в логике игры/раздачи
+                  print(f"Error: Hero's turn but no cards to play and game not over!")
+                  reward = -30; terminated = True # Штраф среды
+             # Другие количества карт (1, 2, 4) не должны возникать в начале хода героя
+
+        # 5. Получаем итоговое наблюдение и информацию
+        observation = self._get_obs()
+        info = self._get_info()
+
+        if self.render_mode == "human":
+            self._render_frame()
+        elif self.render_mode == "ansi":
+             print(self.game) # Печать состояния игры
+
+        return observation, reward, terminated, truncated, info
+
+
+    def _play_opponent_turns_if_needed(self):
+        """Проигрывает ходы оппонентов, пока ход не вернется к герою или игра не закончится."""
+        if self.game is None: return
+
+        while self.game.current_player_idx != self.hero_idx and not self.game.is_game_over():
+            opp_idx = self.game.current_player_idx
+            opp_agent = self.opponent_agents[opp_idx - 1] # Индексы агентов 0..N-2 для оппонентов 1..N-1
+            opponent = self.game.current_player()
+
+            # Оппонент принимает решение (пока случайное)
+            # Случайному агенту нужно передать ВСЕ возможные действия (весь ход целиком)
+            # Это расхождение с нашим последовательным подходом!
+            # Нужно либо переписать случайного агента под последовательные шаги,
+            # либо сделать так, чтобы он возвращал полный ход за раз.
+            # Пока сделаем полный ход для простоты (но это не идеально).
+
+            # --- Начало: Логика полного хода для случайного оппонента ---
+            num_to_play = len(opponent.to_play)
+            if num_to_play == 5: # Раунд 1
+                # Выбираем случайный *валидный* шаблон размещения из первых 232
+                from ofc_encoder import legal_actions as old_legal_actions, ACTION_SPACE as OLD_ACTION_SPACE, action_to_dict as old_action_to_dict
+                legal_action_indices = old_legal_actions(opponent) # Используем старый кодер
+                if not legal_action_indices: # Нет легальных ходов? Маловероятно
+                    print(f"Warning: Opponent {opp_idx} has no legal actions in round 1?")
+                    break # Выход из цикла
+                random_action_id = self.np_random.choice(legal_action_indices)
+                action_dict = old_action_to_dict(random_action_id, opponent.to_play)
+                self.game.play(action_dict) # Используем старый метод play
+
+            elif num_to_play == 3: # Раунды 2+
+                # Выбираем случайный *валидный* шаблон (1 сброс, 2 размещения) из последних 27
+                from ofc_encoder import legal_actions as old_legal_actions, ACTION_SPACE as OLD_ACTION_SPACE, action_to_dict as old_action_to_dict
+                legal_action_indices = old_legal_actions(opponent) # Используем старый кодер
+                if not legal_action_indices:
+                    print(f"Warning: Opponent {opp_idx} has no legal actions in round {self.game.round}?")
+                    break
+                random_action_id = self.np_random.choice(legal_action_indices)
+                action_dict = old_action_to_dict(random_action_id, opponent.to_play)
+                self.game.play(action_dict) # Используем старый метод play
+
+            elif num_to_play == 0 and not self.game.is_game_over():
+                 # Ход оппонента, но у него нет карт - значит, игра должна была раздать
+                 # Или ошибка логики
+                 print(f"Warning: Opponent {opp_idx}'s turn but no cards to play?")
+                 # Просто передаем ход дальше, предполагая, что игра раздаст позже
+                 self.game.current_player_ind = (self.game.current_player_ind + 1) % self.max_player
+                 continue # Пропускаем остаток цикла
+            else:
+                 # Неожиданное количество карт у оппонента
+                 print(f"Warning: Opponent {opp_idx} has unexpected number of cards: {num_to_play}")
+                 break
+            # --- Конец: Логика полного хода для случайного оппонента ---
+
+            # После хода оппонента проверяем конец игры снова
+            if self.game.is_game_over():
+                break
+
+            # Если игра не окончена, и ход все еще не у героя, продолжаем цикл
+
+    def render(self):
+        if self.render_mode == "human":
+             self._render_frame()
+        elif self.render_mode == "ansi":
+            if self.game:
+                 print(self.game)
+
+    def _render_frame(self):
+         # Реализация рендеринга (например, с Pygame или Matplotlib)
+         # Пока просто выводим в консоль
+         if self.game:
+            print(self.game)
+         else:
+            print("Game not initialized.")
+
+    def close(self):
+        # Освобождение ресурсов, если они были заняты (например, окно Pygame)
+        pass
