@@ -71,6 +71,7 @@ env = gym.make("ofc-v2")
 
 # Оборачиваем в ActionMasker. Он должен автоматически найти 'action_mask' в observations space
 env = ActionMasker(env) # Убрали mask_fn
+env.reset()
 
 # Векторизуем (для PPO нужна векторная среда)
 env = DummyVecEnv([lambda: env])

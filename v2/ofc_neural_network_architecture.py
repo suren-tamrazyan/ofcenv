@@ -31,30 +31,20 @@ TURN_PHASE_DISCARD = 6.0 # Фаза сброса (раунды 2+)
 # --- Отображение карт ---
 # Создаем словарь: treys_card_int -> nn_embedding_index (1-52)
 # treys использует битовые маски, нам нужны последовательные индексы
-_DECK_AS_INTS = Deck().cards # Получаем список int'ов карт из treys
 _CARD_RANK_STR = '23456789TJQKA'
 _CARD_SUIT_STR = 'shdc' # Spades, Hearts, Diamonds, Clubs по treys
 
 def get_treys_card_int_map():
     """Создает словарь отображения int карты treys в индекс 1-52."""
     card_map = {}
-    all_cards_pretty = [r + s for r in _CARD_RANK_STR for s in _CARD_SUIT_STR]
-    for i, card_int in enumerate(_DECK_AS_INTS):
-        # Пытаемся найти соответствующую карту (может быть не идеальное совпадение порядка)
-        # Более надежный способ - генерировать int самому или использовать Card.get_rank_int / get_suit_int
-        # Пока предположим, что порядок совпадает с 'shdc'
-        pretty_str = Card.int_to_pretty_str(card_int)
-        if pretty_str in all_cards_pretty:
-             # Назначаем индекс от 1 до 52. Если карт не 52, будет ошибка.
-             # Индексы назначаются в порядке генерации treys.Deck()
-            card_map[card_int] = i + 1
-        else:
-             print(f"Warning: Card {pretty_str} (int: {card_int}) not found in standard deck?")
+    deck = [Card.new(r + s) for r in _CARD_RANK_STR for s in _CARD_SUIT_STR]
+    for i, card_int in enumerate(deck):
+        card_map[card_int] = i + 1
 
     if len(card_map) != NUM_CARDS:
          print(f"Warning: Generated card map has {len(card_map)} cards, expected {NUM_CARDS}. Check treys library.")
          # Простой запасной вариант, если treys выдает что-то странное
-         card_map = {card_int: i + 1 for i, card_int in enumerate(_DECK_AS_INTS[:NUM_CARDS])}
+         card_map = {card_int: i + 1 for i, card_int in enumerate(deck[:NUM_CARDS])}
 
     return card_map
 
@@ -317,7 +307,7 @@ def state_to_tensors(game: Any, # Тип вашего объекта OfcGame
     # --- 4. Общее состояние игры (game_state) ---
     state_list = []
     state_list.append(float(getattr(game, 'round', 1))) # Используем 1-based индексацию раундов?
-    state_list.append(float(game.current_player_idx == player_idx))
+    state_list.append(float(game.current_player_ind == player_idx))
     state_list.append(float(len(to_play_cards_list))) # Реальное кол-во карт на руке
 
     # Статус фантазии и очки
