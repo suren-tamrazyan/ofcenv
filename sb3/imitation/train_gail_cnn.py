@@ -5,7 +5,7 @@ from imitation.util.networks import RunningNorm
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 from imitation.util.util import make_vec_env
-from gym.ofc_gym import OfcEnv
+from gym_env.ofc_gym import OfcEnv
 from cnn_policy import CNNPolicy
 
 def train_gail():

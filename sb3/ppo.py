@@ -3,7 +3,7 @@ from gymnasium.envs.registration import register
 
 register(
     id='ofc-v0',
-    entry_point='gym.ofc_gym:OfcEnv',
+    entry_point='gym_env.ofc_gym:OfcEnv',
 )
 
 

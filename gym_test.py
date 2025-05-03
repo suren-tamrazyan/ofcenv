@@ -3,10 +3,10 @@ from gymnasium.envs.registration import register
 
 register(
     id='ofc-v0',
-    entry_point='gym.ofc_gym:OfcEnv',
+    entry_point='gym_env.ofc_gym:OfcEnv',
 )
 
-#print(gym.envs.registry)
+#print(gym_env.envs.registry)
 
 env = gym.make('ofc-v0', special_for_stochastic_muzero=True)
 # observation, info = env.reset()
@@ -38,6 +38,6 @@ env.close()
 
 
 
-# sp = gym.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])
+# sp = gym_env.spaces.MultiDiscrete([[[14, 14, 14, 1, 1], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14], [14, 14, 14, 14, 14]], [[5, 5, 5, 1, 1], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]]])
 # for _ in range(1):
 #     print(sp.sample())

@@ -6,7 +6,7 @@ from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
 
 register(
     id='ofc-v0',
-    entry_point='gym.ofc_gym:OfcEnv',
+    entry_point='gym_env.ofc_gym:OfcEnv',
 )
 
 def mask_fn(env):
@@ -27,7 +27,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 class CustomCNN(BaseFeaturesExtractor):
     """
-    :param observation_space: (gym.Space)
+    :param observation_space: (gym_env.Space)
     :param features_dim: (int) Number of features extracted.
         This corresponds to the number of unit for the last layer.
     """

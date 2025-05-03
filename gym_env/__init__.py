@@ -2,5 +2,5 @@
 
 # register(
 #     id='ofc-v0',
-#     entry_point='ofcenv.gym.ofc_gym:OfcEnv'
+#     entry_point='ofcenv.gym_env.ofc_gym:OfcEnv'
 # )

@@ -15,7 +15,7 @@ from ofc_encoder import is_legal_action
 
 register(
     id='ofc-v0',
-    entry_point='gym.ofc_gym:OfcEnv',
+    entry_point='gym_env.ofc_gym:OfcEnv',
 )
 
 # Define the mask function

@@ -9,16 +9,16 @@ from imitation.algorithms.adversarial.gail import GAIL
 from imitation.rewards.reward_nets import BasicShapedRewardNet
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from gym.ofc_gym import OfcEnv
+from gym_env.ofc_gym import OfcEnv
 from sb3.imitation.expert_data_loader import load_expert_trajectories
 
 # register(
 #     id='ofc-v0',
-#     entry_point='gym.ofc_gym:OfcEnv',
+#     entry_point='gym_env.ofc_gym:OfcEnv',
 # )
 #
 #
-# env = gym.make('ofc-v0', observe_summary=False)
+# env = gym_env.make('ofc-v0', observe_summary=False)
 
 env = DummyVecEnv([lambda: OfcEnv()])
 
@@ -32,7 +32,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 class CustomCNN(BaseFeaturesExtractor):
     """
-    :param observation_space: (gym.Space)
+    :param observation_space: (gym_env.Space)
     :param features_dim: (int) Number of features extracted.
         This corresponds to the number of unit for the last layer.
     """

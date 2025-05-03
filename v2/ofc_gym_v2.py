@@ -120,6 +120,10 @@ class OfcEnvV2(gym.Env):
 
         return mask
 
+    def get_action_mask(self) -> np.ndarray:
+        """Публичный метод для получения текущей маски действий."""
+        return self._get_action_mask()
+
     def reset(self, seed=None, options=None) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         super().reset(seed=seed) # Важно для воспроизводимости
 

@@ -87,29 +87,26 @@ class OFCFeatureExtractor(nn.Module):
 
     def _process_board(self, cards_tensor: torch.Tensor, row_name: str) -> torch.Tensor:
         """Обрабатывает один ряд карт (уже тензор индексов)."""
-        emb = self.card_embeddings(cards_tensor) # (batch, seq_len, embed_dim)
-        # Permute: (batch, seq_len, embed_dim) -> (batch, embed_dim, seq_len) для Conv1d
+        # --- ПРЕОБРАЗОВАНИЕ ТИПА ---
+        # Убедимся, что входной тензор имеет тип Long
+        if cards_tensor.dtype != torch.long:
+            cards_tensor = cards_tensor.long()
+        # --- КОНЕЦ ПРЕОБРАЗОВАНИЯ ---
+
+        emb = self.card_embeddings(cards_tensor) # Теперь cards_tensor точно Long
         emb_p = emb.permute(0, 2, 1)
 
-        if row_name == 'front':
-            conv_layer = self.conv_front
-        elif row_name == 'middle':
-            conv_layer = self.conv_middle
-        elif row_name == 'back':
-            conv_layer = self.conv_back
-        else:
-            raise ValueError(f"Unknown row name: {row_name}")
+        if row_name == 'front': conv_layer = self.conv_front
+        elif row_name == 'middle': conv_layer = self.conv_middle
+        elif row_name == 'back': conv_layer = self.conv_back
+        else: raise ValueError(f"Unknown row name: {row_name}")
 
-        # kernel_size = seq_len, padding=0 => output seq_len = 1
-        features = F.relu(conv_layer(emb_p)).squeeze(2) # (batch, conv_out, 1) -> (batch, conv_out)
+        features = F.relu(conv_layer(emb_p)).squeeze(2)
         return features
 
     def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
         Выполняет прямое распространение для извлечения признаков из словаря наблюдений.
-        Ожидает ключи: 'player_front', 'player_middle', 'player_back',
-                         'opp<N>_front', 'opp<N>_middle', 'opp<N>_back' (N=0..MAX_OPPONENTS-1),
-                         'to_play', 'game_state'.
         """
         batch_size = obs['game_state'].size(0)
 
@@ -120,23 +117,27 @@ class OFCFeatureExtractor(nn.Module):
         player_board_features = torch.cat([player_front_feat, player_middle_feat, player_back_feat], dim=1)
 
         # 2. Обработка карт 'to_play'
-        to_play_emb = self.card_embeddings(obs['to_play']) # (batch, MAX_CARDS_TO_PLAY_NN, embed_dim)
-        to_play_flat = to_play_emb.view(batch_size, -1) # (batch, MAX_CARDS_TO_PLAY_NN * embed_dim)
+        # --- ПРЕОБРАЗОВАНИЕ ТИПА ---
+        to_play_tensor = obs['to_play']
+        if to_play_tensor.dtype != torch.long:
+            to_play_tensor = to_play_tensor.long()
+        # --- КОНЕЦ ПРЕОБРАЗОВАНИЯ ---
+        to_play_emb = self.card_embeddings(to_play_tensor) # Теперь to_play_tensor точно Long
+        to_play_flat = to_play_emb.view(batch_size, -1)
         to_play_features = F.relu(self.to_play_fc(to_play_flat))
 
         # 3. Обработка карт оппонентов
         opponent_features_list = []
         for i in range(MAX_OPPONENTS):
-            # Собираем признаки для каждого ряда оппонента
+            # Передаем тензоры в _process_board, который сам преобразует тип
             opp_f = self._process_board(obs[f'opp{i}_front'], 'front')
             opp_m = self._process_board(obs[f'opp{i}_middle'], 'middle')
             opp_b = self._process_board(obs[f'opp{i}_back'], 'back')
             opp_board_features = torch.cat([opp_f, opp_m, opp_b], dim=1)
             opponent_features_list.append(opp_board_features)
-
         all_opponent_features = torch.cat(opponent_features_list, dim=1)
 
-        # 4. Обработка состояния игры
+        # 4. Обработка состояния игры (остается float)
         game_state_features = F.relu(self.game_state_fc(obs['game_state']))
 
         # 5. Объединение всех признаков
@@ -147,8 +148,6 @@ class OFCFeatureExtractor(nn.Module):
             game_state_features
         ], dim=1)
 
-        # print("Combined features shape:", combined_features.shape)
-        # assert combined_features.shape[1] == self._feature_dim, "Feature dimension mismatch!"
         return combined_features
 
     @property

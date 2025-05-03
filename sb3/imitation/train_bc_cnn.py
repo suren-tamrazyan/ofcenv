@@ -3,7 +3,7 @@ from imitation.algorithms import bc
 from imitation.data import rollout
 from imitation.util.util import make_vec_env
 from stable_baselines3.common.evaluation import evaluate_policy
-from gym.ofc_gym import OfcEnv
+from gym_env.ofc_gym import OfcEnv
 from cnn_policy import CNNPolicy, CNNExtractor
 from sb3.imitation.expert_data_loader import load_expert_trajectories
 from gymnasium.envs.registration import register
@@ -11,7 +11,7 @@ import torch as th
 
 register(
     id='ofc-v0',
-    entry_point='gym.ofc_gym:OfcEnv',
+    entry_point='gym_env.ofc_gym:OfcEnv',
 )
 
 def train_bc():

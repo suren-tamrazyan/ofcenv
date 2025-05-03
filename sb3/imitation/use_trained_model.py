@@ -1,13 +1,13 @@
 import numpy as np
 from stable_baselines3.common.evaluation import evaluate_policy
 from gymnasium.envs.registration import register
-from gym.ofc_gym import OfcEnv
+from gym_env.ofc_gym import OfcEnv
 from cnn_policy import CNNPolicy
 import torch as th
 
 register(
     id='ofc-v0',
-    entry_point='gym.ofc_gym:OfcEnv',
+    entry_point='gym_env.ofc_gym:OfcEnv',
 )
 
 def load_and_use_model(model_path: str):

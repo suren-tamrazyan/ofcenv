@@ -39,7 +39,7 @@ except gym.error.NameNotFound:
 def env() -> OfcEnvV2:
     """Создает инстанс среды для тестов."""
     environment = gym.make(ENV_ID)
-    # environment = gym.make(ENV_ID, render_mode='human')
+    # environment = gym_env.make(ENV_ID, render_mode='human')
     # Добавляем метод для тестов, если его нет
     if not hasattr(environment.unwrapped, 'get_internal_state'):
          def _get_internal_state(self):

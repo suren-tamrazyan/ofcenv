@@ -12,11 +12,11 @@ from ofc_encoder import is_legal_action
 
 register(
     id='ofc-v0',
-    entry_point='gym.ofc_gym:OfcEnv',
+    entry_point='gym_env.ofc_gym:OfcEnv',
 )
 
 
-# env = gym.make('ofc-v0', observe_summary=False)
+# env = gym_env.make('ofc-v0', observe_summary=False)
 def mask_fn(env) -> np.ndarray:
     # Получаем маску из текущего окружения (уже обернутого в ActionMasker)
     return env.unwrapped.get_action_mask()
@@ -27,7 +27,7 @@ env = ActionMasker(env, mask_fn)
 env = DummyVecEnv([lambda: env])
 
 
-# env = gym.make("ofc-v0", observe_summary=False)
+# env = gym_env.make("ofc-v0", observe_summary=False)
 # env = DummyVecEnv([lambda: env])  # Сначала векторизуем
 # env = ActionMasker(env, mask_fn)  # Затем применяем маскировку
 
@@ -49,7 +49,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 # class CustomCNN(BaseFeaturesExtractor):
 #     """
-#     :param observation_space: (gym.Space)
+#     :param observation_space: (gym_env.Space)
 #     :param features_dim: (int) Number of features extracted.
 #         This corresponds to the number of unit for the last layer.
 #     """
@@ -106,7 +106,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 class CustomCNN(BaseFeaturesExtractor):
     """
-    :param observation_space: (gym.Space)
+    :param observation_space: (gym_env.Space)
     :param features_dim: (int) Number of features extracted.
         This corresponds to the number of unit for the last layer.
     """
