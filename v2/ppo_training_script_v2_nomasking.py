@@ -1,18 +1,15 @@
+import os
+from typing import Optional, Dict  # Добавим типизацию
+
 import gymnasium as gym
 import numpy as np
 import torch
 from gymnasium.envs.registration import register
-from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
-from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv # Импортируем VecEnv
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.callbacks import BaseCallback, EvalCallback, StopTrainingOnRewardThreshold
-from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
-from sb3_contrib.common.wrappers import ActionMasker
-from sb3_contrib import MaskablePPO
-import os
-from typing import Optional, Dict # Добавим типизацию
+from stable_baselines3.common.vec_env import DummyVecEnv  # Импортируем VecEnv
 
 # Импортируем новую среду и компоненты архитектуры
 from ofc_gym_v2 import OfcEnvV2
@@ -87,7 +84,7 @@ print("--- Environment Setup ---")
 # НЕ оборачиваем в ActionMasker здесь
 env = gym.make(ENV_ID)
 # Сначала оборачиваем в ActionMasker, потом в DummyVecEnv
-env = ActionMasker(env, mask_fn)
+# env = ActionMasker(env, mask_fn)
 vec_env = DummyVecEnv([lambda: env])
 
 # тестирование перед обучением
@@ -113,7 +110,7 @@ policy_kwargs = dict(
 )
 
 # Папки для логов и моделей
-log_dir = "./ofc_logs_v2/"
+log_dir = "./ofc_logs_v2_nomask_mln/"
 model_save_path = os.path.join(log_dir, "ppo_ofc_v2_model")
 tensorboard_log_path = os.path.join(log_dir, "tb_logs/")
 eval_log_path = os.path.join(log_dir, "eval_logs/")
@@ -141,7 +138,7 @@ ppo_params = dict(
     seed=42
 )
 
-model = MaskablePPO(**ppo_params)
+model = PPO(**ppo_params)
 
 print("--- Model Setup ---")
 print("Policy:", model.policy)
@@ -183,10 +180,10 @@ class ActionValidatorCallback(BaseCallback):
 # --- Коллбэк для оценки и сохранения лучшей модели ---
 # Создаем отдельную среду для оценки (тоже оборачиваем)
 eval_env = gym.make(ENV_ID)
-eval_env = ActionMasker(eval_env, mask_fn) # <--- Применяем ActionMasker и здесь
+# eval_env = ActionMasker(eval_env, mask_fn) # <--- Применяем ActionMasker и здесь
 eval_vec_env = DummyVecEnv([lambda: eval_env])
 
-eval_callback = MaskableEvalCallback(
+eval_callback = EvalCallback(
     eval_vec_env, # Используем обернутую векторную среду
     best_model_save_path=eval_log_path,
     log_path=eval_log_path,
@@ -203,8 +200,8 @@ print(f"Starting training for {TOTAL_TIMESTEPS} timesteps...")
 try:
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,
-        callback=[ActionValidatorCallback(verbose=0), eval_callback],
-        tb_log_name="MaskablePPO_OFC_v2",
+        callback=[eval_callback],
+        tb_log_name="PPO_OFC_v2_nomask",
         progress_bar=True,
         reset_num_timesteps=False
     )
@@ -239,11 +236,11 @@ try:
     # Пересоздаем среду для оценки с нуля, чтобы не было конфликтов состояния
     eval_env_final_instance = gym.make(ENV_ID)
     eval_env_final_instance = Monitor(eval_env_final_instance) # <--- Добавить Monitor
-    eval_env_final_instance = ActionMasker(eval_env_final_instance, mask_fn)
+    # eval_env_final_instance = ActionMasker(eval_env_final_instance, mask_fn)
     eval_vec_env_final = DummyVecEnv([lambda: eval_env_final_instance]) # <--- Передать функцию
 
     # Загружаем модель
-    model_to_evaluate = MaskablePPO.load(best_model_path, env=eval_vec_env_final)
+    model_to_evaluate = PPO.load(best_model_path, env=eval_vec_env_final)
     print(f"Loaded model from {best_model_path}")
 
     print("Evaluating model...")

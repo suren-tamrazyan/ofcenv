@@ -278,10 +278,8 @@ class OfcEnvV2(gym.Env):
         if self.game.is_game_over():
             terminated = True
             # ... (расчет финальной награды) ...
-            if hasattr(player, 'calc_score_single'):
-                 reward = player.calc_score_single() if not player.is_foul() else -6.0
-            else:
-                 reward = self.game.calc_hero_score()
+            reward = player.calc_score_single()
+            # reward = self.game.calc_hero_score()
             info['final_reward'] = reward # Добавляем в инфо
 
 
