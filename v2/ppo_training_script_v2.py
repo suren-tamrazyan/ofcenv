@@ -1,22 +1,22 @@
+import os
+from typing import Optional, Dict, Callable, Union, List  # Добавим Callable
+
 import gymnasium as gym
 import numpy as np
 import torch
 from gymnasium.envs.registration import register
-from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv # Импортируем VecEnv
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.callbacks import BaseCallback, EvalCallback, StopTrainingOnRewardThreshold
-from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
-from sb3_contrib.common.wrappers import ActionMasker
 from sb3_contrib import MaskablePPO
-import os
-from typing import Optional, Dict # Добавим типизацию
+from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback  # Используем MaskableEvalCallback
+from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.utils import get_linear_fn
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 # Импортируем новую среду и компоненты архитектуры
 from ofc_gym_v2 import OfcEnvV2
-from ofc_neural_network_architecture import OFCFeatureExtractor
+from ofc_neural_network_architecture import OFCFeatureExtractor, ACTION_SPACE_DIM  # Для get_last_mask
 
 # --- Регистрация среды (если еще не сделано) ---
 ENV_ID = 'ofc-v2'
@@ -38,125 +38,49 @@ class SB3OFCFeaturesExtractor(BaseFeaturesExtractor):
         if 'game_state' not in observation_space.spaces:
             raise ValueError("Observation space must contain 'game_state'")
         game_state_dim = observation_space['game_state'].shape[0]
-
-        # --- СНАЧАЛА вычисляем размерность, которая нужна для super().__init__ ---
-        # Создаем временный экстрактор ТОЛЬКО для вычисления размерности
-        # Это не оптимально, но необходимо, чтобы знать features_dim для super()
         temp_feature_extractor = OFCFeatureExtractor(game_state_dim=game_state_dim)
         calculated_features_dim = temp_feature_extractor.feature_dim
-        del temp_feature_extractor # Удаляем временный объект
-
+        del temp_feature_extractor
         actual_features_dim = features_dim_override if features_dim_override is not None else calculated_features_dim
-
-        # --- ТЕПЕРЬ вызываем super().__init__ ---
         super().__init__(observation_space, features_dim=actual_features_dim)
-        print(f"SB3 Feature Extractor Wrapper Initialized. Output dim: {self.features_dim}")
-
-        # --- ПОСЛЕ super() создаем и присваиваем основной экстрактор ---
+        # print(f"SB3 Feature Extractor Wrapper Initialized. Output dim: {self.features_dim}")
         self.ofc_feature_extractor = OFCFeatureExtractor(game_state_dim=game_state_dim)
-
-        # Проверка согласованности размерностей (на всякий случай)
         if self.features_dim != self.ofc_feature_extractor.feature_dim:
-             print(f"Warning: Initialized features_dim ({self.features_dim}) differs from internal extractor dim ({self.ofc_feature_extractor.feature_dim}). This might happen if features_dim_override was used.")
+             print(f"Warning: Initialized features_dim ({self.features_dim}) differs from internal extractor dim ({self.ofc_feature_extractor.feature_dim}).")
         if features_dim_override is not None and features_dim_override != calculated_features_dim:
              print(f"Warning: features_dim_override ({features_dim_override}) does not match calculated feature dim ({calculated_features_dim}).")
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Убираем action_mask перед передачей в экстрактор, если он там есть
         extractor_input = {k: v for k, v in observations.items() if k != 'action_mask'}
         if not extractor_input:
-             # Если observations пуст после удаления маски, возможно, это проблема
-             # Попытаемся вернуть нулевой тензор нужной размерности?
-             batch_size = list(observations.values())[0].shape[0] # Получаем batch_size из исходного словаря
-             device = list(observations.values())[0].device
-             print(f"Warning: Observations dict became empty in forward. Returning zeros tensor of shape ({batch_size}, {self.features_dim})")
+             first_val = next(iter(observations.values())) # Получаем первый элемент, чтобы узнать batch_size и device
+             batch_size = first_val.shape[0]
+             device = first_val.device
+             # print(f"Warning: Observations dict became empty in forward. Returning zeros tensor of shape ({batch_size}, {self.features_dim})")
              return torch.zeros((batch_size, self.features_dim), device=device)
-             # raise ValueError("Observations dict became empty after removing 'action_mask'.")
-
         return self.ofc_feature_extractor(extractor_input)
 
 # --- Функция для ActionMasker ---
-# Эта функция будет вызываться ActionMasker'ом для каждой среды в VecEnv
-# Он передаст одну среду (не векторную) как аргумент
 def mask_fn(env: gym.Env) -> np.ndarray:
-    return env.unwrapped.get_action_mask()
-
-# --- Настройка среды ---
-print("--- Environment Setup ---")
-# Создаем базовую среду
-# НЕ оборачиваем в ActionMasker здесь
-env = gym.make(ENV_ID)
-# Сначала оборачиваем в ActionMasker, потом в DummyVecEnv
-env = ActionMasker(env, mask_fn)
-vec_env = DummyVecEnv([lambda: env])
-
-# тестирование перед обучением
-obs = env.unwrapped.reset()
-
-print("Observation Space (after wrappers):", vec_env.observation_space)
-# Примечание: ActionMasker может удалить 'action_mask' из observation_space, т.к. он обрабатывает ее сам
-if 'action_mask' in vec_env.observation_space.spaces: # type: ignore
-     print("Warning: 'action_mask' key still present in observation space after ActionMasker.")
-else:
-     print("'action_mask' key correctly removed by ActionMasker.")
-
-print("Action Space:", vec_env.action_space)
-print("--------------------------")
+    # Предполагаем, что у OfcEnvV2 есть метод get_action_mask()
+    unwrapped_env = env
+    while hasattr(unwrapped_env, "env") and not isinstance(unwrapped_env, OfcEnvV2):
+        if isinstance(unwrapped_env, ActionMasker): unwrapped_env = unwrapped_env.env
+        elif hasattr(unwrapped_env, "unwrapped"): unwrapped_env = unwrapped_env.unwrapped
+        else: break
+    if isinstance(unwrapped_env, OfcEnvV2):
+        return unwrapped_env.get_action_mask()
+    else:
+        print(f"Warning: mask_fn could not find OfcEnvV2. Found: {type(unwrapped_env)}")
+        # Возвращаем дефолтную маску (все действия запрещены), чтобы вызвать ошибку если что-то не так
+        return np.zeros(ACTION_SPACE_DIM, dtype=bool)
 
 
-# --- Настройка модели MaskablePPO ---
-net_arch_config = dict(pi=[512, 256], vf=[512, 256])
-
-policy_kwargs = dict(
-    features_extractor_class=SB3OFCFeaturesExtractor,
-    net_arch=net_arch_config
-)
-
-# Папки для логов и моделей
-log_dir = "./ofc_logs_v2/"
-model_save_path = os.path.join(log_dir, "ppo_ofc_v2_model")
-tensorboard_log_path = os.path.join(log_dir, "tb_logs/")
-eval_log_path = os.path.join(log_dir, "eval_logs/")
-os.makedirs(log_dir, exist_ok=True)
-os.makedirs(tensorboard_log_path, exist_ok=True)
-os.makedirs(eval_log_path, exist_ok=True)
-
-# Настройки PPO
-ppo_params = dict(
-    policy="MultiInputPolicy", # Используем строку "MultiInputPolicy"
-    env=vec_env, # Передаем УЖЕ обернутую среду
-    policy_kwargs=policy_kwargs,
-    verbose=1,
-    tensorboard_log=tensorboard_log_path,
-    learning_rate=1e-4,
-    n_steps=2048,
-    batch_size=128,
-    n_epochs=10,
-    gamma=0.99,
-    gae_lambda=0.95,
-    clip_range=0.2,
-    ent_coef=0.01,
-    vf_coef=0.5,
-    max_grad_norm=0.5,
-    seed=42
-)
-
-model = MaskablePPO(**ppo_params)
-
-print("--- Model Setup ---")
-print("Policy:", model.policy)
-# Проверим, удалился ли ключ маски из observation_space, видимого политикой
-if 'action_mask' in model.observation_space.spaces: # type: ignore
-    print("ERROR: 'action_mask' still in model's observation space!")
-print("-------------------")
-
-
-# --- Коллбэк для проверки легальности действий ---
-class ActionValidatorCallback(BaseCallback):
+# --- Коллбэк для проверки (упрощенный) ---
+class InfoCallback(BaseCallback): # Переименован для ясности
     def _on_step(self):
-        if self.n_calls % 1000 == 0: # Проверять еще реже
+        if False and self.n_calls % 20000 == 0: # Выводить реже
             try:
-                # Попытка получить текущую маску для информации
                 base_env = self.training_env.envs[0]
                 while hasattr(base_env, "env") and not isinstance(base_env, OfcEnvV2):
                      if isinstance(base_env, ActionMasker): base_env = base_env.env
@@ -164,118 +88,339 @@ class ActionValidatorCallback(BaseCallback):
                      else: break
 
                 if isinstance(base_env, OfcEnvV2):
-                     current_mask = mask_fn(base_env)
+                     current_mask_arr = mask_fn(base_env)
                      action = self.locals["actions"][0]
                      phase = base_env.current_turn_phase
                      active_idx = base_env.active_card_idx
-                     # Просто выводим информацию без проверки легальности
-                     print(f"--- Callback Info (Step {self.n_calls}) ---")
-                     print(f"Action chosen (for prev state): {action}")
-                     print(f"Current Mask (for next state): {np.where(current_mask)[0]}")
-                     print(f"Current Env State: Phase={phase}, ActiveCardIdx={active_idx}")
-                     print(f"---------------------------------------")
-
-            except Exception as e:
-                 # print(f"Warning: Could not get info for validation callback: {e}")
-                 pass # Просто пропускаем при ошибке
+                     # print(f"--- Callback Info (Step {self.n_calls}) ---")
+                     # print(f"Action chosen (for prev state): {action}")
+                     # print(f"Current Mask (for next state): {np.where(current_mask_arr)[0]}")
+                     # print(f"Current Env State: Phase={phase}, ActiveCardIdx={active_idx}")
+                     # print(f"---------------------------------------")
+            except Exception:
+                 pass # Молча пропускаем, если не удалось получить инфо
         return True
 
-# --- Коллбэк для оценки и сохранения лучшей модели ---
-# Создаем отдельную среду для оценки (тоже оборачиваем)
-eval_env = gym.make(ENV_ID)
-eval_env = ActionMasker(eval_env, mask_fn) # <--- Применяем ActionMasker и здесь
-eval_vec_env = DummyVecEnv([lambda: eval_env])
+# --- Основная функция обучения ---
+def train_ofc_agent(
+    total_timesteps: int = 1_000_000,
+    log_dir_base: str = "./ofc_runs/",
+    run_name: str = "MaskablePPO_OFC_v2",
+    learning_rate_start: float = 3e-4,
+    learning_rate_end: float = 1e-5,
+    learning_rate_end_fraction: float = 0.9,
+    ent_coef_val: float = 0.01,
+    vf_coef_val: float = 0.5, # Вернул к стандартному
+    net_arch_pi: Optional[List[int]] = None,
+    net_arch_vf: Optional[List[int]] = None,
+    activation_fn_str: str = "ReLU", # "Tanh" или "ReLU"
+    n_steps_val: int = 2048,
+    batch_size_val: int = 128,
+    n_epochs_val: int = 10,
+    load_model_path: Optional[str] = None,
+    seed_val: int = 42,
+    n_eval_episodes: int = 20,
+    eval_freq_factor: int = 10000
+    ):
+    """
+    Функция для обучения или дообучения агента OFC.
+    """
+    print(f"--- Starting/Resuming Training Run: {run_name} ---")
+    print(f"Total Timesteps: {total_timesteps}")
+    if load_model_path:
+        print(f"Attempting to load model from: {load_model_path}")
 
-eval_callback = MaskableEvalCallback(
-    eval_vec_env, # Используем обернутую векторную среду
-    best_model_save_path=eval_log_path,
-    log_path=eval_log_path,
-    eval_freq=max(10000 // vec_env.num_envs, 1),
-    n_eval_episodes=20,
-    deterministic=True,
-    render=False,
-)
+    # Папки для логов и моделей
+    log_dir = os.path.join(log_dir_base, run_name)
+    model_save_path = os.path.join(log_dir, "ppo_ofc_model") # Убрал _v2
+    tensorboard_log_path = os.path.join(log_dir, "tb_logs/")
+    eval_log_path = os.path.join(log_dir, "eval_logs/")
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(tensorboard_log_path, exist_ok=True)
+    os.makedirs(eval_log_path, exist_ok=True)
 
-# --- Обучение ---
-TOTAL_TIMESTEPS = 1_000_000
+    # --- Настройка среды ---
+    def make_env_fn():
+        env = gym.make(ENV_ID)
+        env = Monitor(env) # Оборачиваем в Monitor для корректной статистики
+        env = ActionMasker(env, mask_fn)
+        return env
 
-print(f"Starting training for {TOTAL_TIMESTEPS} timesteps...")
-try:
-    model.learn(
-        total_timesteps=TOTAL_TIMESTEPS,
-        callback=[ActionValidatorCallback(verbose=0), eval_callback],
-        tb_log_name="MaskablePPO_OFC_v2",
-        progress_bar=True,
-        reset_num_timesteps=False
+    vec_env = DummyVecEnv([make_env_fn])
+    # vec_env.reset() # Сброс уже не нужен здесь, SB3 сделает это
+
+    # --- Настройка политики ---
+    if net_arch_pi is None: net_arch_pi = [512, 256]
+    if net_arch_vf is None: net_arch_vf = [512, 256]
+    net_arch_config = dict(pi=net_arch_pi, vf=net_arch_vf)
+
+    activation_fn_map = {"ReLU": torch.nn.ReLU, "Tanh": torch.nn.Tanh}
+    selected_activation_fn = activation_fn_map.get(activation_fn_str, torch.nn.Tanh)
+
+    policy_kwargs = dict(
+        features_extractor_class=SB3OFCFeaturesExtractor,
+        net_arch=net_arch_config,
+        activation_fn=selected_activation_fn
     )
-    model.save(model_save_path + "_final")
-    print("Training finished. Final model saved.")
 
-except KeyboardInterrupt:
-    print("Training interrupted by user.")
-    model.save(model_save_path + "_interrupted")
-    print("Model saved.")
-except Exception as e:
-    print(f"An error occurred during training: {e}")
-    import traceback
-    traceback.print_exc()
-    model.save(model_save_path + "_error")
-    print("Model saved after error.")
+    # Learning rate schedule
+    effective_learning_rate: Union[float, Callable[[float], float]]
+    if learning_rate_start == learning_rate_end:
+        effective_learning_rate = learning_rate_start
+    else:
+        effective_learning_rate = get_linear_fn(
+            start=learning_rate_start,
+            end=learning_rate_end,
+            end_fraction=learning_rate_end_fraction
+        )
+
+    ppo_params_dict = dict(
+        policy="MultiInputPolicy",
+        env=vec_env,
+        policy_kwargs=policy_kwargs,
+        verbose=1,
+        tensorboard_log=tensorboard_log_path,
+        learning_rate=effective_learning_rate,
+        n_steps=n_steps_val,
+        batch_size=batch_size_val,
+        n_epochs=n_epochs_val,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=ent_coef_val,
+        vf_coef=vf_coef_val,
+        max_grad_norm=0.5,
+        seed=seed_val
+    )
+
+    if load_model_path and os.path.exists(load_model_path + ".zip"):
+        print(f"Loading model from {load_model_path}...")
+        model = MaskablePPO.load(
+            load_model_path,
+            env=vec_env, # Передаем новую среду (это важно для SB3)
+            custom_objects={"learning_rate": 0.0, "lr_schedule": lambda _:0.0, "clip_range": lambda _:0.0}, # Заглушки для lr и clip_range, если они были schedule
+            # НЕ ПЕРЕДАЕМ policy_kwargs здесь, если не хотим их менять
+            # SB3 попытается восстановить policy_kwargs из сохраненного файла
+        )
+        print("Model loaded. Setting new training parameters if needed.")
+
+        # Явно устанавливаем параметры обучения, которые мы МОЖЕМ и ХОТИМ изменить для продолжения
+        # SB3 load() может восстановить optimizer state, но мы можем захотеть новый schedule.
+        model.learning_rate = effective_learning_rate # effective_learning_rate должно быть определено ранее
+        model.ent_coef = ent_coef_val
+        model.vf_coef = vf_coef_val
+        # model.clip_range = ... # Тоже нужно установить, если clip_range - schedule
+        if isinstance(ppo_params_dict["clip_range"], Callable): # ppo_params_dict определен ранее
+            model.clip_range = ppo_params_dict["clip_range"]
+        else:
+            # Для константы или если хотим новый schedule для константы
+            model.clip_range = get_linear_fn(ppo_params_dict["clip_range"], ppo_params_dict["clip_range"], 1.0)
 
 
-# --- Оценка лучшей модели ---
-print("\nLoading best model for evaluation...")
-try:
-    best_model_path = os.path.join(log_dir, "ppo_ofc_v2_model_final")
-    # best_model_path = os.path.join(eval_log_path, "best_model")
-    # Убедимся, что файл существует
-    if not os.path.exists(best_model_path + ".zip"):
-         print(f"Best model not found at {best_model_path}. Evaluating final model instead.")
-         best_model_path = model_save_path + "_final" # Или прерванную/ошибочную
-         if not os.path.exists(best_model_path + ".zip"):
-             print("No model found to evaluate.")
-             raise FileNotFoundError("No model saved.")
+        print("Model loaded. Continuing training.")
+        # Устанавливаем num_timesteps для learn, чтобы он знал, сколько еще учиться
+        # SB3 автоматически продолжит с total_timesteps загруженной модели, если reset_num_timesteps=False
+    else:
+        if load_model_path:
+            print(f"Warning: Specified load_model_path '{load_model_path}' not found. Training new model.")
+        model = MaskablePPO(**ppo_params_dict)
+        print("New model created.")
 
-    # Пересоздаем среду для оценки с нуля, чтобы не было конфликтов состояния
-    eval_env_final_instance = gym.make(ENV_ID)
-    eval_env_final_instance = Monitor(eval_env_final_instance) # <--- Добавить Monitor
-    eval_env_final_instance = ActionMasker(eval_env_final_instance, mask_fn)
-    eval_vec_env_final = DummyVecEnv([lambda: eval_env_final_instance]) # <--- Передать функцию
+    print("--- Model Setup ---")
+    # print("Policy:", model.policy) # Можно раскомментировать для детального вывода
+    if 'action_mask' in model.observation_space.spaces:
+        print("ERROR: 'action_mask' still in model's observation space!")
+    print("-------------------")
+
+    # --- Коллбэк для оценки ---
+    eval_env_instance = gym.make(ENV_ID)
+    eval_env_instance = Monitor(eval_env_instance)
+    eval_env_instance = ActionMasker(eval_env_instance, mask_fn)
+    eval_vec_env = DummyVecEnv([lambda: eval_env_instance])
+
+    eval_callback = MaskableEvalCallback( # Используем MaskableEvalCallback
+        eval_vec_env,
+        best_model_save_path=eval_log_path, # Сохраняет как best_model.zip
+        log_path=eval_log_path,
+        eval_freq=max(eval_freq_factor // vec_env.num_envs, 1),
+        n_eval_episodes=n_eval_episodes,
+        deterministic=True, # Оцениваем детерминированно
+        # render=False, # render убран, т.к. MaskableEvalCallback его не поддерживает напрямую
+        use_masking=True # ВАЖНО: Указываем использовать маску при оценке
+    )
+
+    print(f"Starting/Continuing training for {total_timesteps} total timesteps...")
+    try:
+        model.learn(
+            total_timesteps=total_timesteps, # Общее количество шагов с начала
+            callback=[InfoCallback(verbose=0), eval_callback],
+            tb_log_name=run_name, # Используем имя запуска для логов
+            progress_bar=True,
+            reset_num_timesteps=(load_model_path is None) # Сбрасывать, только если новая модель
+        )
+        model.save(model_save_path + "_final")
+        print("Training finished. Final model saved.")
+
+    except KeyboardInterrupt:
+        print("Training interrupted by user.")
+        model.save(model_save_path + "_interrupted")
+        print("Model saved.")
+    except Exception as e:
+        print(f"An error occurred during training: {e}")
+        import traceback
+        traceback.print_exc()
+        model.save(model_save_path + "_error")
+        print("Model saved after error.")
+    finally:
+        vec_env.close()
+        eval_vec_env.close()
+
+# --- Функция для оценки модели ---
+
+def evaluate_ofc_agent(
+    model_path: str,
+    n_episodes: int = 50,
+    deterministic: bool = True,
+    use_masking_in_predict: bool = True # Оставляем эту опцию для явного контроля
+    ):
+    print(f"\n--- Evaluating Model: {model_path} ---")
+    if not os.path.exists(model_path + ".zip"):
+        print(f"Model not found at {model_path}")
+        return
+
+    # Создаем среду для оценки
+    eval_env_instance = gym.make(ENV_ID)
+    eval_env_instance = Monitor(eval_env_instance)
+    # ActionMasker нужен, если use_masking_in_predict=True и мы хотим, чтобы obs содержал 'action_mask'
+    # Или если сама модель ожидает obs без маски, а мы ее извлекаем из среды
+    # Для чистоты, если predict сам берет маску из obs, то ActionMasker для среды не нужен
+    # НО! Если мы хотим ПОЛУЧИТЬ маску из среды, то ActionMasker не нужен, нужен доступ к get_action_mask
+    # Оставим ActionMasker, так как он не повредит, а obs['action_mask'] может быть удобен
+    eval_env_instance = ActionMasker(eval_env_instance, mask_fn)
+    eval_vec_env = DummyVecEnv([lambda: eval_env_instance])
 
     # Загружаем модель
-    model_to_evaluate = MaskablePPO.load(best_model_path, env=eval_vec_env_final)
-    print(f"Loaded model from {best_model_path}")
+    # НЕ передаем policy_kwargs, SB3 должен сам восстановить экстрактор
+    try:
+        model_to_evaluate = MaskablePPO.load(model_path, env=eval_vec_env)
+        print(f"Loaded model from {model_path}")
+        # Проверим, что экстрактор правильный (опционально, для отладки)
+        loaded_extractor = model_to_evaluate.policy.features_extractor
+        if hasattr(loaded_extractor, 'ofc_feature_extractor') and \
+                loaded_extractor.__class__.__name__ == SB3OFCFeaturesExtractor.__name__:  # Сравниваем имена классов
+            print("Correct custom feature extractor type was loaded based on name and attribute.")
+        elif loaded_extractor is not None:
+            print(
+                f"Warning: Loaded model has a feature extractor of type '{type(loaded_extractor).__name__}', expected 'SB3OFCFeaturesExtractor'. Structure might still be correct.")
+            # Можно добавить вывод структуры для визуальной проверки, если нужно
+            print("Loaded extractor structure:", loaded_extractor)
+        else:
+            print("Error: Feature extractor not found in loaded model.")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        import traceback
+        traceback.print_exc()
+        eval_vec_env.close()
+        return
 
-    print("Evaluating model...")
+
     total_reward = 0
-    num_episodes = 50
+    total_length = 0
+    rewards_list = []
 
-    obs = eval_vec_env_final.reset()
-    episodes_completed = 0
-    while episodes_completed < num_episodes:
-        action, _states = model_to_evaluate.predict(obs, deterministic=True)
-        obs, reward, done, info = eval_vec_env_final.step(action)
-        if done[0]:
-            episode_reward = info[0].get('episode', {}).get('r', 0) # Получаем награду из info, если есть Monitor
-            if episode_reward == 0 and 'raw_reward' in info[0]: # Если нет Monitor, берем последнюю
-                episode_reward = info[0]['raw_reward']
+    # Сбрасываем среду перед циклом оценки
+    obs = eval_vec_env.reset() # obs теперь будет словарём тензоров, если VecEnv обернут в SB3
 
-            print(f"Eval Episode {episodes_completed + 1} finished. Reward: {episode_reward:.2f}")
-            total_reward += episode_reward
-            episodes_completed += 1
-            # Сброс происходит автоматически в VecEnv
+    for episode in range(n_episodes):
+        terminated = False
+        truncated = False # В Gymnasium done разделен на terminated и truncated
+        episode_reward = 0
+        episode_length = 0
+        while not terminated and not truncated:
+            action_masks_for_predict = None
+            if use_masking_in_predict:
+                # obs[0] так как reset() для VecEnv возвращает список/кортеж наблюдений
+                # и мы берем наблюдение для первой (и единственной) среды
+                # Если obs уже словарь (например, после первого step), то просто obs['action_mask']
+                current_obs_dict = obs[0] if isinstance(obs, (list, tuple)) else obs
 
-    print(f"\nAverage reward over {episodes_completed} eval episodes: {total_reward / episodes_completed:.2f}")
+                if 'action_mask' not in current_obs_dict:
+                    # Если маски нет в наблюдении, получаем ее из среды
+                    action_masks_for_predict = eval_vec_env.env_method("get_action_mask")[0]
+                else:
+                    action_masks_for_predict = current_obs_dict['action_mask']
 
-except FileNotFoundError as e:
-    print(e)
-except Exception as e:
-    print(f"An error occurred during evaluation: {e}")
-    import traceback
-    traceback.print_exc()
+            action, _states = model_to_evaluate.predict(
+                obs, # Передаем все наблюдения (SB3 сам разберется с батчем)
+                deterministic=deterministic,
+                action_masks=action_masks_for_predict if use_masking_in_predict else None
+            )
+            obs, reward, done, info = eval_vec_env.step(action) # done - это массив булевых
+            episode_reward += reward[0]
+            episode_length += 1
 
-# Закрываем среды
-vec_env.close()
-# eval_vec_env.close() # Закрывается внутри EvalCallback? Проверить.
-if 'eval_vec_env_final' in locals(): eval_vec_env_final.close()
-print("Environments closed.")
+            terminated = done[0] # Используем done[0] для VecEnv
+            # truncated для VecEnv обычно тоже в done[0] или в info[0].get("TimeLimit.truncated", False)
+            truncated = info[0].get("TimeLimit.truncated", False)
+
+
+            if terminated or truncated:
+                monitor_ep_info = info[0].get('episode')
+                if monitor_ep_info:
+                    actual_ep_reward = monitor_ep_info['r']
+                    actual_ep_length = monitor_ep_info['l']
+                    print(f"Eval Episode {episode + 1}/{n_episodes} finished. Reward: {actual_ep_reward:.2f}, Length: {actual_ep_length}")
+                    rewards_list.append(actual_ep_reward)
+                    total_reward += actual_ep_reward
+                    total_length += actual_ep_length
+                else:
+                    print(f"Eval Episode {episode + 1}/{n_episodes} finished (no Monitor info). Step Reward: {reward[0]:.2f}, Manual Ep Reward: {episode_reward:.2f}, Length: {episode_length}")
+                    rewards_list.append(episode_reward)
+                    total_reward += episode_reward
+                    total_length += episode_length
+                # obs = eval_vec_env.reset() # Сброс происходит автоматически в VecEnv, если эпизод завершен
+                break # Выход из while для текущего эпизода
+
+    avg_reward = total_reward / n_episodes if n_episodes > 0 else 0
+    avg_length = total_length / n_episodes if n_episodes > 0 else 0
+    print(f"\nAverage reward over {n_episodes} eval episodes: {avg_reward:.2f}")
+    print(f"Average length over {n_episodes} eval episodes: {avg_length:.2f}")
+    if rewards_list:
+        print(f"Reward std: {np.std(rewards_list):.2f}, Min: {np.min(rewards_list):.2f}, Max: {np.max(rewards_list):.2f}")
+
+    eval_vec_env.close()
+
+
+# --- Пример использования (можно закомментировать при импорте) ---
+if __name__ == "__main__":
+    # Настройки для первого запуска или продолжения
+    config = {
+        "total_timesteps": 100_000, # Уменьшил для быстрого теста
+        "log_dir_base": "./ofc_colab_runs/",
+        "run_name": "PPO_Run1",
+        "learning_rate_start": 3e-4,
+        "learning_rate_end": 1e-5,
+        "ent_coef_val": 0.01,
+        "vf_coef_val": 0.5,
+        "net_arch_pi": [512, 256],
+        "net_arch_vf": [512, 256],
+        "n_steps_val": 2048,
+        "batch_size_val": 128,
+        "load_model_path": "./ofc_colab_runs/PPO_Run1/ppo_ofc_model_final", # None, # "./ofc_colab_runs/PPO_Run1/ppo_ofc_model_final" # Пример для продолжения
+        "eval_freq_factor": 5000, # Оценивать каждые ~5k шагов
+        "n_eval_episodes": 10 # Меньше эпизодов для быстрой оценки
+    }
+
+    # Запуск обучения
+    # train_ofc_agent(**config)
+
+    # Оценка финальной модели
+    final_model_to_eval = os.path.join(config["log_dir_base"], config["run_name"], "ppo_ofc_model_final")
+    evaluate_ofc_agent(final_model_to_eval, n_episodes=50, use_masking_in_predict=True)
+
+    # Оценка лучшей модели (если была сохранена EvalCallback)
+    best_model_to_eval = os.path.join(config["log_dir_base"], config["run_name"], "eval_logs/best_model")
+    if os.path.exists(best_model_to_eval + ".zip"):
+        evaluate_ofc_agent(best_model_to_eval, n_episodes=50, use_masking_in_predict=True)
+    else:
+        print(f"Best model not found at {best_model_to_eval}, skipping its evaluation.")
