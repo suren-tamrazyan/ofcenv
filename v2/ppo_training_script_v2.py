@@ -12,7 +12,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import get_linear_fn
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 # Импортируем новую среду и компоненты архитектуры
 from ofc_gym_v2 import OfcEnvV2
@@ -120,13 +120,17 @@ def train_ofc_agent(
     load_model_path: Optional[str] = None,
     seed_val: int = 42,
     n_eval_episodes: int = 20,
-    eval_freq_factor: int = 10000
+    eval_freq_factor: int = 10000,
+    # --- НОВЫЕ ПАРАМЕТРЫ для VecEnv ---
+    vec_env_type: str = "dummy",  # "dummy" или "subproc"
+    n_envs: int = 1  # Количество окружений (для subproc > 1)
     ):
     """
     Функция для обучения или дообучения агента OFC.
     """
     print(f"--- Starting/Resuming Training Run: {run_name} ---")
     print(f"Total Timesteps: {total_timesteps}")
+    print(f"Using VecEnv type: {vec_env_type} with {n_envs} environments.")
     if load_model_path:
         print(f"Attempting to load model from: {load_model_path}")
 
@@ -140,14 +144,45 @@ def train_ofc_agent(
     os.makedirs(eval_log_path, exist_ok=True)
 
     # --- Настройка среды ---
-    def make_env_fn():
-        env = gym.make(ENV_ID)
-        env = Monitor(env) # Оборачиваем в Monitor для корректной статистики
-        env = ActionMasker(env, mask_fn)
-        return env
+    # def make_env_fn():
+    #     env = gym.make(ENV_ID)
+    #     env = Monitor(env) # Оборачиваем в Monitor для корректной статистики
+    #     env = ActionMasker(env, mask_fn)
+    #     return env
+    # vec_env = DummyVecEnv([make_env_fn])
+    def make_env_fn_for_vec(rank: int, seed: int = 0):
+        """
+        Утилитарная функция для создания окружений для VecEnv.
+        :param rank: индекс окружения
+        :param seed: начальное число для генератора случайных чисел
+        """
+        def _init():
+            env = gym.make(ENV_ID)
+            # Важно: Monitor и другие обертки, не зависящие от rank, лучше применять к базовой среде
+            env = Monitor(env)
+            env = ActionMasker(env, mask_fn)
+            # Устанавливаем seed для каждого окружения, если нужно (для воспроизводимости в SubprocVecEnv)
+            # env.reset(seed=seed + rank) # Gymnasium reset принимает seed
+            # Однако SB3 VecEnv сам управляет сидами, поэтому явный reset здесь может быть не нужен
+            return env
+        # Устанавливаем seed для make_vec_env, если используется SubprocVecEnv
+        # set_random_seed(seed) # SB3 set_random_seed не нужен здесь, т.к. seed передается в PPO
+        return _init
 
-    vec_env = DummyVecEnv([make_env_fn])
-    # vec_env.reset() # Сброс уже не нужен здесь, SB3 сделает это
+    # --- ВЫБОР ТИПА VEC_ENV ---
+    if vec_env_type.lower() == "subproc" and n_envs > 1:
+        print(f"Creating SubprocVecEnv with {n_envs} environments.")
+        # Для SubprocVecEnv каждая среда должна быть функцией, возвращающей среду
+        vec_env = SubprocVecEnv([make_env_fn_for_vec(i, seed_val) for i in range(n_envs)])
+    elif vec_env_type.lower() == "dummy" or n_envs == 1:
+        if vec_env_type.lower() == "subproc" and n_envs == 1:
+            print("Warning: n_envs=1 for SubprocVecEnv, defaulting to DummyVecEnv.")
+        print(f"Creating DummyVecEnv with {n_envs} environment(s).")
+        # Для DummyVecEnv можно передать список функций или одну функцию, если n_envs=1
+        vec_env = DummyVecEnv([make_env_fn_for_vec(i, seed_val) for i in range(n_envs)])
+    else:
+        raise ValueError(f"Unsupported vec_env_type: {vec_env_type} or invalid n_envs: {n_envs}")
+    # --- КОНЕЦ ВЫБОРА ТИПА VEC_ENV ---
 
     # --- Настройка политики ---
     if net_arch_pi is None: net_arch_pi = [512, 256]
@@ -233,16 +268,21 @@ def train_ofc_agent(
     print("-------------------")
 
     # --- Коллбэк для оценки ---
-    eval_env_instance = gym.make(ENV_ID)
-    eval_env_instance = Monitor(eval_env_instance)
-    eval_env_instance = ActionMasker(eval_env_instance, mask_fn)
-    eval_vec_env = DummyVecEnv([lambda: eval_env_instance])
+    # eval_env_instance = gym.make(ENV_ID)
+    # eval_env_instance = Monitor(eval_env_instance)
+    # eval_env_instance = ActionMasker(eval_env_instance, mask_fn)
+    # eval_vec_env = DummyVecEnv([lambda: eval_env_instance])
+    # Создаем eval_vec_env с таким же типом и количеством, как и основной vec_env
+    if vec_env_type.lower() == "subproc" and n_envs > 1:
+        eval_vec_env = SubprocVecEnv([make_env_fn_for_vec(i, seed_val + n_envs + i) for i in range(n_envs)]) # Разные сиды для eval
+    else:
+        eval_vec_env = DummyVecEnv([make_env_fn_for_vec(i, seed_val + n_envs + i) for i in range(n_envs)])
 
     eval_callback = MaskableEvalCallback( # Используем MaskableEvalCallback
         eval_vec_env,
         best_model_save_path=eval_log_path, # Сохраняет как best_model.zip
         log_path=eval_log_path,
-        eval_freq=max(eval_freq_factor // vec_env.num_envs, 1),
+        eval_freq=max(eval_freq_factor // n_envs, 1), # Делим на n_envs
         n_eval_episodes=n_eval_episodes,
         deterministic=True, # Оцениваем детерминированно
         # render=False, # render убран, т.к. MaskableEvalCallback его не поддерживает напрямую
@@ -395,7 +435,7 @@ def evaluate_ofc_agent(
 if __name__ == "__main__":
     # Настройки для первого запуска или продолжения
     config = {
-        "total_timesteps": 100_000, # Уменьшил для быстрого теста
+        "total_timesteps": 15_000, # Уменьшил для быстрого теста
         "log_dir_base": "./ofc_colab_runs/",
         "run_name": "PPO_Run1",
         "learning_rate_start": 3e-4,
@@ -408,11 +448,13 @@ if __name__ == "__main__":
         "batch_size_val": 128,
         "load_model_path": "./ofc_colab_runs/PPO_Run1/ppo_ofc_model_final", # None, # "./ofc_colab_runs/PPO_Run1/ppo_ofc_model_final" # Пример для продолжения
         "eval_freq_factor": 5000, # Оценивать каждые ~5k шагов
-        "n_eval_episodes": 10 # Меньше эпизодов для быстрой оценки
+        "n_eval_episodes": 10, # Меньше эпизодов для быстрой оценки
+        "vec_env_type": "subproc",
+        "n_envs": 4
     }
 
     # Запуск обучения
-    # train_ofc_agent(**config)
+    train_ofc_agent(**config)
 
     # Оценка финальной модели
     final_model_to_eval = os.path.join(config["log_dir_base"], config["run_name"], "ppo_ofc_model_final")
