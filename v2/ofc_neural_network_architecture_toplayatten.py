@@ -62,147 +62,122 @@ class OFCFeatureExtractor(nn.Module):
     Модуль для преобразования состояния игры OFC в векторное представление (признаки).
     Версия 3.1: Адаптирована под последовательные решения в ходе.
     """
-    def __init__(self, embedding_dim: int = 32, conv_out_channels: int = 64,
-                 game_state_dim: int = 63, game_state_fc_out: int = 128,
-                 board_attention_heads: int = 4):
-        super().__init__()
+    def __init__(self, embedding_dim: int = 32, conv_out_channels: int = 64, game_state_dim: int = 63, game_state_fc_out: int = 128): # game_state_dim уточнена
+        super(OFCFeatureExtractor, self).__init__()
         self.embedding_dim = embedding_dim
-        self.conv_out_channels = conv_out_channels # Размерность признаков каждого ряда ПОСЛЕ свертки
+        self.conv_out_channels = conv_out_channels
         self.game_state_fc_out = game_state_fc_out
-        self.board_attention_heads = board_attention_heads
 
-        # --- Эмбеддинги ---
         self.card_embeddings = nn.Embedding(NUM_CARDS + 1, embedding_dim, padding_idx=CARD_PAD_IDX)
 
-        # --- Сверточные слои для рядов + BatchNorm ---
         self.conv_front = nn.Conv1d(embedding_dim, conv_out_channels, kernel_size=MAX_CARDS_IN_ROW['front'], padding=0)
-        self.bn_front = nn.BatchNorm1d(conv_out_channels)
         self.conv_middle = nn.Conv1d(embedding_dim, conv_out_channels, kernel_size=MAX_CARDS_IN_ROW['middle'], padding=0)
-        self.bn_middle = nn.BatchNorm1d(conv_out_channels)
         self.conv_back = nn.Conv1d(embedding_dim, conv_out_channels, kernel_size=MAX_CARDS_IN_ROW['back'], padding=0)
-        self.bn_back = nn.BatchNorm1d(conv_out_channels)
 
-        # --- Внимание между признаками рядов ---
-        # Вход для attention: последовательность из 3 векторов (front, middle, back), каждый размером conv_out_channels
-        # MultiheadAttention ожидает (seq_len, batch_size, embed_dim) или (batch_size, seq_len, embed_dim) если batch_first=True
-        # Здесь embed_dim для attention будет conv_out_channels
-        self.board_attention = nn.MultiheadAttention(
-            embed_dim=conv_out_channels,
-            num_heads=board_attention_heads,
-            batch_first=True # Ожидаем (batch, seq_len=3, feature_dim=conv_out_channels)
-        )
-        self.board_attention_norm = nn.LayerNorm(conv_out_channels)
-        # После attention у нас все еще будет 3 вектора по conv_out_channels.
-        # Мы их сконкатенируем, так что общий размер будет 3 * conv_out_channels.
+        # Обработка to_play с паддингом до MAX_CARDS_TO_PLAY_NN
+        # self.to_play_fc = nn.Linear(MAX_CARDS_TO_PLAY_NN * embedding_dim, conv_out_channels * 2)
+        # --- НОВЫЕ СЛОИ для to_play с Attention ---
+        self.to_play_attention = nn.MultiheadAttention(embed_dim=embedding_dim, num_heads=4, batch_first=True)
+        self.to_play_norm = nn.LayerNorm(embedding_dim)
+        # Выход attention будет (batch, seq_len, embedding_dim).
+        # Если мы хотим агрегировать в один вектор (batch, embedding_dim):
+        self.to_play_pool_attn = nn.AdaptiveAvgPool1d(1) # Используем AvgPool или MaxPool
+        # ИЛИ можно просто взять выход первого токена (если используем [CLS] токен, но это сложнее)
+        # ИЛИ можно сплющить: nn.Flatten(), тогда выход будет seq_len * embedding_dim
+        # Пока оставим пулинг, который даст embedding_dim признаков.
 
-        # --- Обработка to_play (возвращаемся к Linear для простоты + LayerNorm) ---
-        self.to_play_fc = nn.Linear(MAX_CARDS_TO_PLAY_NN * embedding_dim, conv_out_channels * 2) # Выход 2*conv для сопоставимости с прошлыми версиями
-        self.to_play_norm = nn.LayerNorm(conv_out_channels * 2)
-
-        # --- Обработка game_state + LayerNorm ---
         self.game_state_fc = nn.Linear(game_state_dim, game_state_fc_out)
-        self.game_state_norm = nn.LayerNorm(game_state_fc_out)
 
-        # --- Расчет итоговой размерности признаков ---
-        # Признаки рядов игрока (после Attention и конкатенации): 3 * conv_out_channels
-        # Признаки to_play: conv_out_channels * 2
-        # Признаки рядов оппонентов (каждый обрабатывается так же, как у игрока): MAX_OPPONENTS * (3 * conv_out_channels)
-        # Признаки game_state: game_state_fc_out
+        # Расчет итоговой размерности признаков
+        # --- ОБНОВЛЕННЫЙ РАСЧЕТ _feature_dim ---
+        # Признаки от рядов: 3 * conv_out_channels
+        # Признаки от to_play (после Attention и Pooling): embedding_dim
+        # Признаки от оппонентов: MAX_OPPONENTS * 3 * conv_out_channels
+        # Признаки от game_state: game_state_fc_out
         self._feature_dim = (3 * conv_out_channels) + \
-                            (conv_out_channels * 2) + \
-                            (MAX_OPPONENTS * (3 * conv_out_channels)) + \
+                            (embedding_dim) + \
+                            (MAX_OPPONENTS * 3 * conv_out_channels) + \
                             game_state_fc_out
-        print(f"OFCFeatureExtractor initialized. Calculated feature_dim: {self._feature_dim}")
 
+        # print(f"Feature extractor initialized. Feature dim: {self._feature_dim}")
 
-    def _process_single_row(self, cards_tensor: torch.Tensor, conv_layer: nn.Conv1d, bn_layer: nn.BatchNorm1d) -> torch.Tensor:
-        """Обрабатывает ОДИН ряд карт (front, middle, или back)."""
+    def _process_board(self, cards_tensor: torch.Tensor, row_name: str) -> torch.Tensor:
+        """Обрабатывает один ряд карт (уже тензор индексов)."""
+        # --- ПРЕОБРАЗОВАНИЕ ТИПА ---
+        # Убедимся, что входной тензор имеет тип Long
         if cards_tensor.dtype != torch.long:
             cards_tensor = cards_tensor.long()
-        emb = self.card_embeddings(cards_tensor)    # (batch, seq_len, embed_dim)
-        emb_p = emb.permute(0, 2, 1)                # (batch, embed_dim, seq_len)
-        conv_out = conv_layer(emb_p)                # (batch, conv_out_channels, 1)
-        bn_out = bn_layer(conv_out)
-        activated_out = F.relu(bn_out)
-        squeezed_out = activated_out.squeeze(2)     # (batch, conv_out_channels)
-        return squeezed_out
+        # --- КОНЕЦ ПРЕОБРАЗОВАНИЯ ---
 
-    def _apply_board_attention(self, front_f: torch.Tensor, middle_f: torch.Tensor, back_f: torch.Tensor) -> torch.Tensor:
-        """
-        Применяет self-attention к признакам рядов (front, middle, back).
-        Вход: три тензора формы (batch, conv_out_channels)
-        Выход: тензор формы (batch, 3 * conv_out_channels) - конкатенация обработанных признаков
-        """
-        # Собираем признаки рядов в последовательность: (batch, 3, conv_out_channels)
-        # 3 - это front, middle, back
-        board_sequence = torch.stack([front_f, middle_f, back_f], dim=1)
+        emb = self.card_embeddings(cards_tensor) # Теперь cards_tensor точно Long
+        emb_p = emb.permute(0, 2, 1)
 
-        # Self-attention
-        # Q, K, V - это board_sequence
-        attn_output, _ = self.board_attention(board_sequence, board_sequence, board_sequence)
-        # Residual connection + LayerNorm
-        normed_attn_output = self.board_attention_norm(board_sequence + attn_output)
+        if row_name == 'front': conv_layer = self.conv_front
+        elif row_name == 'middle': conv_layer = self.conv_middle
+        elif row_name == 'back': conv_layer = self.conv_back
+        else: raise ValueError(f"Unknown row name: {row_name}")
 
-        # Возвращаем признаки рядов после attention. Можно их просто "сплющить" (конкатенировать).
-        # (batch, 3, conv_out_channels) -> (batch, 3 * conv_out_channels)
-        return normed_attn_output.reshape(normed_attn_output.size(0), -1)
+        features = F.relu(conv_layer(emb_p)).squeeze(2)
+        return features
 
     def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Выполняет прямое распространение для извлечения признаков из словаря наблюдений.
+        """
         batch_size = obs['game_state'].size(0)
 
         # 1. Обработка карт игрока
-        player_front_feat_raw = self._process_single_row(obs['player_front'], self.conv_front, self.bn_front)
-        player_middle_feat_raw = self._process_single_row(obs['player_middle'], self.conv_middle, self.bn_middle)
-        player_back_feat_raw = self._process_single_row(obs['player_back'], self.conv_back, self.bn_back)
-        # Применяем внимание к признакам рядов игрока
-        player_board_features_processed = self._apply_board_attention(
-            player_front_feat_raw, player_middle_feat_raw, player_back_feat_raw
-        ) # Форма (batch, 3 * conv_out_channels)
+        player_front_feat = self._process_board(obs['player_front'], 'front')
+        player_middle_feat = self._process_board(obs['player_middle'], 'middle')
+        player_back_feat = self._process_board(obs['player_back'], 'back')
+        player_board_features = torch.cat([player_front_feat, player_middle_feat, player_back_feat], dim=1)
 
-        # 2. Обработка карт 'to_play' (возвращаемся к Linear)
+        # 2. Обработка карт 'to_play'
+        # --- НОВАЯ ОБРАБОТКА to_play ---
         to_play_tensor_indices = obs['to_play']
         if to_play_tensor_indices.dtype != torch.long:
             to_play_tensor_indices = to_play_tensor_indices.long()
-        to_play_emb = self.card_embeddings(to_play_tensor_indices)
-        to_play_flat = to_play_emb.view(batch_size, -1)
-        to_play_features_raw = self.to_play_fc(to_play_flat)
-        to_play_features = F.relu(self.to_play_norm(to_play_features_raw)) # ReLU после LayerNorm
 
+        to_play_emb = self.card_embeddings(to_play_tensor_indices) # (batch, MAX_CARDS_TO_PLAY_NN, embedding_dim)
+
+        # Self-attention (Q, K, V - это to_play_emb)
+        # key_padding_mask: True для элементов, которые нужно игнорировать (паддинг)
+        # Мы используем CARD_PAD_IDX (0) для nn.Embedding, который зануляет эмбеддинги.
+        # MultiheadAttention может не нуждаться в явной маске, если паддинг-эмбеддинги нулевые
+        # или если мы хотим, чтобы он сам "научился" их игнорировать.
+        # Но лучше передать маску, если возможно.
+        # Создаем маску для паддинга: True где PAD_IDX, False где реальная карта
+        key_padding_mask = (to_play_tensor_indices == CARD_PAD_IDX) # (batch, MAX_CARDS_TO_PLAY_NN)
+
+        attn_output, _ = self.to_play_attention(to_play_emb, to_play_emb, to_play_emb, key_padding_mask=key_padding_mask if key_padding_mask.any() else None)
+        attn_output = self.to_play_norm(to_play_emb + attn_output) # Residual connection + LayerNorm
+
+        # Агрегируем выходы внимания
+        # (batch, seq_len, embedding_dim) -> (batch, embedding_dim, seq_len) для пулинга
+        to_play_permuted_for_pool = attn_output.permute(0, 2, 1)
+        to_play_features = self.to_play_pool_attn(to_play_permuted_for_pool).squeeze(2) # (batch, embedding_dim)
+        # --- КОНЕЦ НОВОЙ ОБРАБОТКИ to_play ---
         # 3. Обработка карт оппонентов
         opponent_features_list = []
         for i in range(MAX_OPPONENTS):
-            opp_front_feat_raw = self._process_single_row(obs[f'opp{i}_front'], self.conv_front, self.bn_front)
-            opp_middle_feat_raw = self._process_single_row(obs[f'opp{i}_middle'], self.conv_middle, self.bn_middle)
-            opp_back_feat_raw = self._process_single_row(obs[f'opp{i}_back'], self.conv_back, self.bn_back)
-            # Применяем внимание к признакам рядов каждого оппонента
-            opp_board_features_processed = self._apply_board_attention(
-                opp_front_feat_raw, opp_middle_feat_raw, opp_back_feat_raw
-            )
-            opponent_features_list.append(opp_board_features_processed)
-        all_opponent_features_processed = torch.cat(opponent_features_list, dim=1)
+            # Передаем тензоры в _process_board, который сам преобразует тип
+            opp_f = self._process_board(obs[f'opp{i}_front'], 'front')
+            opp_m = self._process_board(obs[f'opp{i}_middle'], 'middle')
+            opp_b = self._process_board(obs[f'opp{i}_back'], 'back')
+            opp_board_features = torch.cat([opp_f, opp_m, opp_b], dim=1)
+            opponent_features_list.append(opp_board_features)
+        all_opponent_features = torch.cat(opponent_features_list, dim=1)
 
-        # 4. Обработка состояния игры
-        game_state_features_raw = self.game_state_fc(obs['game_state'])
-        game_state_features = F.relu(self.game_state_norm(game_state_features_raw)) # ReLU после LayerNorm
+        # 4. Обработка состояния игры (остается float)
+        game_state_features = F.relu(self.game_state_fc(obs['game_state']))
 
         # 5. Объединение всех признаков
         combined_features = torch.cat([
-            player_board_features_processed,
+            player_board_features,
             to_play_features,
-            all_opponent_features_processed,
+            all_opponent_features,
             game_state_features
         ], dim=1)
-
-        # Проверка размерности
-        if combined_features.shape[1] != self._feature_dim:
-            print(f"FATAL: Feature dimension mismatch in OFCFeatureExtractor!")
-            print(f"Expected: {self._feature_dim}, Got: {combined_features.shape[1]}")
-            print(f"Player board: {player_board_features_processed.shape}")
-            print(f"To play: {to_play_features.shape}")
-            print(f"Opponents: {all_opponent_features_processed.shape}")
-            print(f"Game state: {game_state_features.shape}")
-            # Это должно вызвать ошибку на следующем слое, если размерность неверна
-            # Можно добавить assert, но SB3 сам это поймает
 
         return combined_features
 
@@ -210,11 +185,6 @@ class OFCFeatureExtractor(nn.Module):
     def feature_dim(self) -> int:
         return self._feature_dim
 
-# ... (OFCPolicyNetwork, OFCActionEncoder, state_to_tensors остаются такими же) ...
-# Но OFCPolicyNetwork теперь будет получать features_dim, рассчитанный по-новому.
-# Если MlpExtractor в SB3 используется с activation_fn=torch.nn.ReLU,
-# то добавление LayerNorm перед ReLU в нем самом (если бы мы делали кастомный MlpExtractor)
-# было бы правильным. Сейчас ReLU применяется после LayerNorm в нашем экстракторе.
 
 class OFCPolicyNetwork(nn.Module):
     """

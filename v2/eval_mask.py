@@ -52,18 +52,20 @@ try:
     eval_vec_env_final = DummyVecEnv([lambda: eval_env_final_instance]) # <--- Передать функцию
 
     # Загружаем модель
-    model_to_evaluate = MaskablePPO.load(best_model_path, env=eval_vec_env_final)
+    # model_to_evaluate = MaskablePPO.load(best_model_path, env=eval_vec_env_final)
     print(f"Loaded model from {best_model_path}")
 
     print("Evaluating model...")
     total_reward = 0
-    num_episodes = 50
+    num_episodes = 20
+    rewards_list = []
 
     obs = eval_vec_env_final.reset()
     episodes_completed = 0
     while episodes_completed < num_episodes:
         legal_act = obs['action_mask']
-        action, _states = model_to_evaluate.predict(obs, deterministic=True, action_masks=legal_act)
+        # action, _states = model_to_evaluate.predict(obs, deterministic=True, action_masks=legal_act)
+        action = np.array([np.random.choice(np.where(legal_act == 1)[1])])
         obs, reward, done, info = eval_vec_env_final.step(action)
         if done[0]:
             episode_reward = info[0].get('episode', {}).get('r', 0) # Получаем награду из info, если есть Monitor
@@ -73,9 +75,13 @@ try:
             print(f"Eval Episode {episodes_completed + 1} finished. Reward: {episode_reward:.2f}")
             total_reward += episode_reward
             episodes_completed += 1
+            rewards_list.append(episode_reward)
+            # if episode_reward > 1:
+            #     eval_vec_env_final.render(mode="human")
             # Сброс происходит автоматически в VecEnv
 
     print(f"\nAverage reward over {episodes_completed} eval episodes: {total_reward / episodes_completed:.2f}")
+    print(f"Reward std: {np.std(rewards_list):.2f}, Min: {np.min(rewards_list):.2f}, Max: {np.max(rewards_list):.2f}")
 
 except FileNotFoundError as e:
     print(e)
