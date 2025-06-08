@@ -3,7 +3,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict, Any, List
 
 # Импортируем из ваших файлов и новой архитектуры
-from ofcgame import OfcGame, OfcPlayer # Убедитесь, что импорты OfcGame корректны
+from ofcgame import OfcGame, OfcPlayer, OfcGameBase  # Убедитесь, что импорты OfcGame корректны
 from ofc_agent import OfcRandomAgent # Ваш случайный агент
 from ofc_neural_network_architecture import (
     state_to_tensors, OFCActionEncoder, ACTION_SPACE_DIM, MAX_CARDS_IN_ROW,
@@ -143,6 +143,105 @@ class OfcEnvV2(gym.Env):
         if self.render_mode == "human":
             self._render_frame()
 
+        return observation, info
+
+    def reset_to_state(self, initial_state_snapshot: Dict[str, Any], seed: Optional[int] = None) -> Tuple[
+        Dict[str, np.ndarray], Dict[str, Any]]:
+        """
+        Инициализирует среду с заданного состояния игры.
+        initial_state_snapshot: Словарь, содержащий 'players', 'round', 'current_player_ind', 'deck_state'.
+        """
+        super().reset(seed=seed)  # Для инициализации self.np_random
+
+        # Создаем пустой объект OfcGame или используем специальный конструктор, если есть
+        # Важно, чтобы OfcGame позволял установить свое состояние извне.
+        # Это может потребовать модификации OfcGame.
+        num_players_snapshot = len(initial_state_snapshot["players"])
+        # Для OfcGameBase нужен game_id, max_player, button, hero
+        # Мы можем не знать button из HH, но можем знать current_player
+        # Предположим, hero_idx всегда 0 в нашей среде
+        # button можно установить по orderIndex последнего игрока
+
+        # Находим максимальный orderIndex для определения button_ind
+        max_order_idx = -1
+        for p_data in initial_state_snapshot["players"]:
+            if p_data:  # Проверяем, что слот игрока не None
+                # orderIndex неявно есть в структуре hero_data/opp_data из HHParser, но не в snapshot
+                # Нужно его передавать или вычислять из позиции в списке initial_state_snapshot["players"]
+                # Пока предположим, что initial_state_snapshot["players"] уже упорядочен по orderIndex
+                pass  # Логика button_ind требует доработки
+
+        # Пока используем дефолтный button_ind
+        self.game = OfcGame(game_id="curriculum",
+                                max_player=num_players_snapshot,
+                                button=num_players_snapshot - 1,  # Пример
+                                hero=initial_state_snapshot.get("current_player_ind", 0))  # Герой - это тот, чей ход
+
+        # Устанавливаем состояние каждого игрока
+        self.game.players = []  # Очищаем дефолтных игроков
+        for i, player_data_snapshot in enumerate(initial_state_snapshot["players"]):
+            if player_data_snapshot is None:  # Если в HH было меньше игроков, чем MAX_OPPONENTS
+                # Создаем фиктивного пустого игрока или пропускаем
+                # Для простоты пока будем ожидать полного списка
+                # Это потребует доработки HHParser, чтобы он всегда возвращал список нужной длины
+                # с None для отсутствующих оппонентов.
+                # Либо OfcGame должен уметь работать с разным числом игроков.
+                # Пока пропустим, если игрок None
+                continue
+
+            p = OfcPlayer(name=player_data_snapshot["name"], fantasy=player_data_snapshot["fantasy"])
+            p.front = list(player_data_snapshot["front"])  # Копируем списки
+            p.middle = list(player_data_snapshot["middle"])
+            p.back = list(player_data_snapshot["back"])
+            p.dead = list(player_data_snapshot["dead"])
+            p.to_play = list(player_data_snapshot["to_play"])
+            p.stack = player_data_snapshot["stack"]
+            self.game.players.append(p)
+            if player_data_snapshot.get("hero", False):
+                self.game.hero = i  # Обновляем индекс героя в игре, если он отличается
+
+        self.game.round = initial_state_snapshot["round"]
+        self.game.current_player_ind = initial_state_snapshot["current_player_ind"]
+        # self.game.button_ind = ... # Нужно установить из initial_state_snapshot, если есть
+
+        # Устанавливаем состояние колоды в OfcGame
+        # Это потребует, чтобы OfcGame имел метод для установки колоды или работал с переданным списком карт
+        if hasattr(self.game, 'deck') and hasattr(self.game.deck, 'cards'):
+            self.game.deck.cards = list(initial_state_snapshot["deck_state"])  # Копируем
+            self.game.deck._random.shuffle(self.game.deck.cards)   # Перемешиваем "оставшуюся" колоду
+        else:
+            print("Warning: Cannot set deck state in OfcGame. Curriculum learning might be inexact.")
+
+        # Устанавливаем начальные фазы для Curriculum Learning
+        # Герой должен сделать ход, так что phase PLACE_1 или DISCARD
+        num_hero_to_play = len(self.game.players[self.game.current_player_ind].to_play)
+        if num_hero_to_play == 5:  # Начало раунда 1 (не должно быть для curriculum > 1 раунда)
+            self.current_turn_phase = TURN_PHASE_PLACE_1
+            self.active_card_idx = 0
+        elif num_hero_to_play == 3:  # Раунды 2+
+            self.current_turn_phase = TURN_PHASE_DISCARD
+            self.active_card_idx = -1
+        elif num_hero_to_play == 2 or num_hero_to_play == 1:  # Уже в середине хода (например, после сброса)
+            self.current_turn_phase = TURN_PHASE_PLACE_1
+            self.active_card_idx = 0
+        else:
+            # Если 0 карт, то ход уже должен был быть завершен, или это конец игры
+            if not self.game.is_game_over():
+                print(f"Warning: Resetting to state where hero has {num_hero_to_play} cards but it's their turn.")
+            self.current_turn_phase = -1  # Неопределенная фаза
+            self.active_card_idx = -1
+
+        self.cards_placed_this_turn = 0  # Сбрасываем счетчик
+
+        # Если ход не у героя (не должно быть при правильной генерации состояний curriculum),
+        # но на всякий случай:
+        # self._play_opponent_turns_if_needed() # Это не нужно, если состояние уже для хода героя
+
+        observation = self._get_obs()
+        info = self._get_info()
+        # self._last_mask = observation.get('action_mask', self._last_mask)  # Обновляем маску
+
+        if self.render_mode == "human": self._render_frame()
         return observation, info
 
     def step(self, action: int) -> Tuple[Dict[str, np.ndarray], float, bool, bool, Dict[str, Any]]:
