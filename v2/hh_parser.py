@@ -2,6 +2,9 @@ import json
 import os
 from typing import List, Dict, Any, Optional, Tuple
 from treys import Card # Предполагаем, что у вас есть способ конвертировать строки в объекты Card или int
+
+from v2.ofc_neural_network_architecture import NUM_CARDS
+
 _CARD_RANK_STR = '23456789TJQKA'
 _CARD_SUIT_STR = 'shdc' # Spades, Hearts, Diamonds, Clubs по treys
 
@@ -106,167 +109,183 @@ class HHParser:
             parsed.append((card_int, round_num))
         return parsed
 
-    def get_states_for_round(self, target_placement_round: int) -> List[Dict[str, Any]]:
+    def get_states_for_round(self, target_game_round: int) -> List[Dict[str, Any]]:
         """
-        Генерирует начальные состояния для обучения, когда ход героя
-        и он должен сделать свое размещение в `target_placement_round`.
-        target_placement_round: 1 (первые 5 карт), 2 (1-я из 3), 3 (2-я из 3), ..., 5.
-        (Нумерация раундов размещения, а не игровых раундов (1-5))
+        Генерирует начальные состояния для обучения, когда наступает ход героя
+        в начале указанного target_game_round (1-5 или 1-9).
+        Состояние отражает доски непосредственно ПЕРЕД ПЕРВЫМ ДЕЙСТВИЕМ ГЕРОЯ в этом раунде.
         """
         game_initial_states = []
-        for hand in self.parsed_hands:
-            # --- Воссоздание состояния игры на начало target_placement_round ---
-            # Это требует симуляции или аккуратного разбора истории
-            # Примерная логика:
-            # 1. Определить, какие карты были на доске у героя и оппонентов *до* этого раунда.
-            # 2. Определить, какие карты были сброшены героем *до* этого раунда.
-            # 3. Определить, какие карты герой получает на руки *в этом* раунде.
+        for hand_info in self.parsed_hands:  # Используем hand_info вместо hand, чтобы не путать с рукой карт
+            # placement_round_hh (0-4 или 0-8) соответствует картам, размещенным В target_game_round
+            # Нам нужны карты, размещенные ДО target_game_round для досок.
+            # placement_r_hh в HH: 0 (первые 5 карт), 1 (карты 2-го игрового раунда), ..., 4 (карты 5-го игрового раунда)
+            # target_game_round: 1 (первый), 2, ..., 5
+            # Карты на доске должны быть с placement_r_hh < (target_game_round - 1)
+            hh_round_marker_for_board_cards = target_game_round - 1
 
-            # Словарь для хранения состояния игры, похожего на то, что ожидает state_to_tensors
-            # (но для OfcGame, а не напрямую для NN)
             current_game_snapshot = {
                 "players": [],
-                "round": 0, # Игровой раунд (1-5 или до 9)
-                "current_player_ind": -1, # Индекс героя, если его ход
-                "button_ind": -1,
-                "deck_state": [], # Оставшиеся карты в колоде
-                "hero_to_play_cards": [] # Карты, которые герой должен разыграть на этом шаге
+                "round": target_game_round,
+                "current_player_ind": -1,  # Будет установлен на индекс героя
+                "button_ind": -1,  # TODO: Определить из HH или по соглашению
+                "deck_state": [],
             }
 
-            # --- Логика для героя ---
-            hero_data = hand["hero"]
-            hero_board_at_round_start = {'front': [], 'middle': [], 'back': []}
-            hero_dead_at_round_start = []
+            hero_data = hand_info["hero"]
+            opponents_data = hand_info["opponents"]  # Список словарей данных оппонентов
 
-            # Разбор рядов героя
-            row_strings = hero_data.get("rows", "").split('/')
+            num_players = 1 + len(opponents_data)
+            hero_order_idx = hero_data["orderIndex"]
+            current_game_snapshot["current_player_ind"] = hero_order_idx
+
+            # --- Определение, кто ходил до героя в этом раунде ---
+            # Это важно для правильного состояния досок оппонентов.
+            # Если target_game_round > 1, некоторые оппоненты могли уже походить.
+            # Карты, размещенные в hh_round_marker_for_board_cards (т.е. target_game_round - 1),
+            # это карты ТЕКУЩЕГО target_game_round.
+            # Для досок оппонентов, ходивших ДО героя в этом раунде, мы должны учесть карты
+            # с hh_round_marker_for_board_cards.
+            # Для досок оппонентов, ходящих ПОСЛЕ героя, мы должны учесть карты
+            # с placement_r_hh < hh_round_marker_for_board_cards.
+
+            all_players_snapshot_temp = [None] * num_players
+            processed_players = 0
+
+            # --- Герой ---
+            hero_board_at_turn = {'front': [], 'middle': [], 'back': []}
+            hero_dead_at_turn = []
+
+            row_strings_hero = hero_data.get("rows", "").split('/')
             for i, row_name in enumerate(["front", "middle", "back"]):
-                if i < len(row_strings):
-                    cards_in_row = self._parse_cards_from_string(row_strings[i])
-                    for card_int, placement_r in cards_in_row:
-                        # placement_r здесь - это номер раунда размещения (0-4)
-                        # target_placement_round у нас тоже 0-4 (или 1-5, нужно согласовать)
-                        # Предположим target_placement_round 0-4.
-                        # Раунд 0 = первые 5 карт. Раунды 1-4 = по 3 карты (2 кладутся, 1 сброс).
-                        # Но в HH у вас нумерация раундов 0, 1, 2, 3, 4.
-                        # Давайте считать, что target_placement_round в HH-терминах (0-4).
-                        # 0 - первые 5 карт. 1 - первые 3 карты 2-го игрового раунда, и т.д.
-                        if placement_r < target_placement_round:
-                            if card_int is not None: hero_board_at_round_start[row_name].append(card_int)
+                if i < len(row_strings_hero):
+                    cards_in_row = self._parse_cards_from_string(row_strings_hero[i])
+                    for card_int, placement_r_hh in cards_in_row:
+                        # Карты героя на доске - это те, что были положены в раундах HH *до* текущего раунда HH
+                        if placement_r_hh < hh_round_marker_for_board_cards:
+                            if card_int is not None: hero_board_at_turn[row_name].append(card_int)
 
-            # Разбор сброса героя
             dead_cards_hero = self._parse_cards_from_string(hero_data.get("dead", ""))
-            for card_int, placement_r in dead_cards_hero:
-                 if placement_r < target_placement_round: # Сброшенные до текущего раунда
-                     if card_int is not None: hero_dead_at_round_start.append(card_int)
+            for card_int, placement_r_hh in dead_cards_hero:
+                # Сброс героя в раундах HH *до* текущего раунда HH
+                if placement_r_hh < hh_round_marker_for_board_cards:
+                    if card_int is not None: hero_dead_at_turn.append(card_int)
 
+            hero_snapshot_player = {
+                "name": hero_data["playerName"], "hero": True, "fantasy": False,
+                "front": hero_board_at_turn["front"], "middle": hero_board_at_turn["middle"],
+                "back": hero_board_at_turn["back"], "dead": hero_dead_at_turn,
+                "to_play": [],  # Будет заполнено в env.reset_to_state
+                "stack": hero_data.get("stack", 0)  # Если есть инфо о стеке
+            }
+            if 0 <= hero_order_idx < num_players:
+                all_players_snapshot_temp[hero_order_idx] = hero_snapshot_player
+                processed_players += 1
+            else:
+                # print(f"Error: Invalid hero_order_idx {hero_order_idx} for hand {hand_info['hand_id']}")
+                continue
 
-            # Определяем карты для розыгрыша героем в target_placement_round
-            # Это самая сложная часть, так как HH не говорит явно, какие карты были "на руках"
-            # перед каждым решением. Он показывает, куда карта ПОШЛА и в каком раунде.
-            # Нам нужно будет восстановить "руку".
-            # Пример: если target_placement_round = 0 (первый ход), то "рука" - это 5 карт,
-            # которые пошли в слоты с отметкой раунда 0.
-            # Если target_placement_round = 1 (второй игровой раунд), то "рука" - это 3 карты:
-            #   - две, которые пошли в слоты с отметкой раунда 1
-            #   - одна, которая пошла в dead с отметкой раунда 1
+            # --- Оппоненты ---
+            for opp_data in opponents_data:
+                opp_board_at_turn = {'front': [], 'middle': [], 'back': [], 'dead': []}
+                opp_order_idx = opp_data["orderIndex"]
 
-            hero_hand_for_this_round = []
-            all_hero_placed_cards_this_round = [] # Карты, размещенные героем в target_placement_round
-            # Собираем все карты героя, которые он разместил или сбросил в target_placement_round
-            for row_name in ["front", "middle", "back"]:
-                row_str = hero_data.get("rows", "").split('/')[ ["front", "middle", "back"].index(row_name) ] if len(hero_data.get("rows", "").split('/')) > ["front", "middle", "back"].index(row_name) else ""
-                for card_int, r in self._parse_cards_from_string(row_str):
-                    if r == target_placement_round and card_int is not None:
-                        all_hero_placed_cards_this_round.append(card_int)
-            for card_int, r in dead_cards_hero:
-                 if r == target_placement_round and card_int is not None:
-                     all_hero_placed_cards_this_round.append(card_int) # Добавляем и сброшенную карту
+                # Определяем, ходил ли этот оппонент ДО героя в текущем target_game_round
+                # Это зависит от orderIndex и button_ind (или просто порядка ходов)
+                # Предположим, что порядок ходов соответствует orderIndex, начиная с (button_ind + 1) % num_players
+                # Это упрощение, реальная логика может быть сложнее.
+                # Для Curriculum Learning мы хотим состояние ПЕРЕД ходом героя.
+                # Значит, если оппонент ходил до героя в этом раунде, его доска должна это отражать.
 
-            # Убедимся, что количество карт соответствует раунду
-            expected_cards_in_hand = 5 if target_placement_round == 0 else 3
-            if len(all_hero_placed_cards_this_round) != expected_cards_in_hand:
-                print(f"Warning: Hand {hand['hand_id']}, Hero, Round {target_placement_round}: Expected {expected_cards_in_hand} cards, found {len(all_hero_placed_cards_this_round)}")
-                continue # Пропускаем это состояние, если данные неполные/неконсистентные
+                # Если оппонент ходит раньше героя в этом раунде (меньший orderIndex, если герой не на баттоне и не первый)
+                # или если target_game_round > 1 и это первый ход героя в раунде (тогда оппоненты с большим orderIndex, но до баттона, уже ходили)
+                # Это сложная часть. Пока сделаем проще:
+                # Доска оппонента на момент хода героя в target_game_round включает карты,
+                # которые оппонент положил в hh_round_marker_for_board_cards (т.е. в текущем игровом раунде), ЕСЛИ он ходил раньше героя.
+                # И карты, положенные в hh_round_marker < hh_round_marker_for_board_cards.
 
-            current_game_snapshot["hero_to_play_cards"] = all_hero_placed_cards_this_round
+                # Упрощенная логика: если orderIndex оппонента меньше, чем у героя,
+                # и герой не первый ходящий в раунде (т.е. не сразу после баттона),
+                # то оппонент мог походить в текущем раунде до героя.
+                # Это нужно уточнять по логам или правилам определения первого хода в раунде.
 
-            # --- Аналогично для оппонентов (доски) ---
-            # ... (нужно будет заполнить boards оппонентов до target_placement_round)
-            opponent_boards_at_round_start = []
-            for opp_data in hand["opponents"]:
-                opp_board = {'front': [], 'middle': [], 'back': [], 'dead': []} # Оппоненты тоже могут сбрасывать, если это Pineapple
-                # Парсим ряды оппонента аналогично герою
+                # Пока будем собирать доску оппонента до hh_round_marker_for_board_cards,
+                # а если target_game_round > 1, то для оппонентов, ходивших до героя,
+                # нужно добавить карты с hh_round_marker_for_board_cards.
+                # Это очень сложно точно восстановить без симуляции.
+
+                # **УПРОЩЕННЫЙ ПОДХОД для Curriculum Learning:**
+                # Мы берем состояние доски для всех игроков на момент *начала* target_game_round.
+                # То есть, все карты, положенные с маркером раунда HH < (target_game_round - 1).
+                # Затем среда раздает карты текущему игроку (герою).
+                # Ходы оппонентов в этом target_game_round будут симулироваться средой.
+                # Это означает, что если мы стартуем с середины игры, оппоненты начнут раунд "с нуля" для этого раунда.
+                # Это не идеально для точного воссоздания, но проще для CL.
+
+                max_placement_round_for_opp_board = hh_round_marker_for_board_cards
+
                 row_strings_opp = opp_data.get("rows", "").split('/')
                 for i, row_name in enumerate(["front", "middle", "back"]):
                     if i < len(row_strings_opp):
                         cards_in_row = self._parse_cards_from_string(row_strings_opp[i])
-                        for card_int, placement_r in cards_in_row:
-                            if placement_r < target_placement_round: # Карты, положенные до этого раунда
-                                if card_int is not None: opp_board[row_name].append(card_int)
-                # Парсим dead оппонента
+                        for card_int, placement_r_hh in cards_in_row:
+                            if placement_r_hh < max_placement_round_for_opp_board:
+                                if card_int is not None: opp_board_at_turn[row_name].append(card_int)
+
                 dead_cards_opp = self._parse_cards_from_string(opp_data.get("dead", ""))
-                for card_int, placement_r in dead_cards_opp:
-                    if placement_r < target_placement_round:
-                        if card_int is not None: opp_board['dead'].append(card_int)
-                opponent_boards_at_round_start.append(opp_board)
+                for card_int, placement_r_hh in dead_cards_opp:
+                    if placement_r_hh < max_placement_round_for_opp_board:
+                        if card_int is not None: opp_board_at_turn['dead'].append(card_int)
 
-
-            # --- Заполнение current_game_snapshot ---
-            # Игровой раунд: (0->1, 1->2, 2->3, 3->4, 4->5)
-            current_game_snapshot["round"] = target_placement_round + 1
-            # Индексы игроков и кнопка (нужно определить из hero_data["orderIndex"] и кол-ва игроков)
-            num_players = 1 + len(hand["opponents"])
-            hero_order_idx = hero_data["orderIndex"]
-            # current_game_snapshot["current_player_ind"] = hero_order_idx # Если orderIndex это и есть индекс в списке players
-            # current_game_snapshot["button_ind"] = ... # Нужно знать, кто баттон в этой раздаче
-
-            # Собираем всех игроков для snapshot
-            # Сначала герой
-            hero_snapshot_player = {
-                "name": hero_data["playerName"], "hero": True, "fantasy": False,
-                "front": hero_board_at_round_start["front"],
-                "middle": hero_board_at_round_start["middle"],
-                "back": hero_board_at_round_start["back"],
-                "dead": hero_dead_at_round_start,
-                "to_play": current_game_snapshot["hero_to_play_cards"], # Карты для текущего решения
-                "stack": 0 # или из HH, если есть
-            }
-            # Затем оппоненты
-            # Порядок важен, нужно сохранить orderIndex
-            all_players_snapshot_temp = [None] * num_players
-            all_players_snapshot_temp[hero_order_idx] = hero_snapshot_player
-            current_game_snapshot["current_player_ind"] = hero_order_idx
-
-
-            for i, opp_data in enumerate(hand["opponents"]):
                 opp_snapshot_player = {
                     "name": opp_data["playerName"], "hero": False, "fantasy": opp_data["inFantasy"],
-                    "front": opponent_boards_at_round_start[i]["front"],
-                    "middle": opponent_boards_at_round_start[i]["middle"],
-                    "back": opponent_boards_at_round_start[i]["back"],
-                    "dead": opponent_boards_at_round_start[i]["dead"],
-                    "to_play": [], # Карты оппонента на руках нам не нужны для хода героя
-                    "stack": 0
+                    "front": opp_board_at_turn["front"], "middle": opp_board_at_turn["middle"],
+                    "back": opp_board_at_turn["back"], "dead": opp_board_at_turn["dead"],
+                    "to_play": [],  # Карты оппонента будут розданы средой, если их ход
+                    "stack": opp_data.get("stack", 0)
                 }
-                all_players_snapshot_temp[opp_data["orderIndex"]] = opp_snapshot_player
+                if 0 <= opp_order_idx < num_players:
+                    if all_players_snapshot_temp[opp_order_idx] is None:
+                        all_players_snapshot_temp[opp_order_idx] = opp_snapshot_player
+                        processed_players += 1
+                    else:
+                        # print(f"Error: Duplicate orderIndex {opp_order_idx} or slot already filled for hand {hand_info['hand_id']}")
+                        # Это не должно происходить, если данные HH корректны
+                        break  # Прерываем обработку этой руки
+                else:
+                    # print(f"Error: Invalid opp_order_idx {opp_order_idx} for hand {hand_info['hand_id']}")
+                    break
+            else:  # Если внутренний цикл по оппонентам завершился без break
+                if processed_players != num_players:
+                    # print(f"Warning: Hand {hand_info['hand_id']} player count mismatch. Expected {num_players}, processed {processed_players}. Snapshot: {all_players_snapshot_temp}")
+                    continue  # Пропускаем эту руку, если не все игроки обработаны
 
-            current_game_snapshot["players"] = all_players_snapshot_temp
+                current_game_snapshot["players"] = all_players_snapshot_temp
 
-            # Состояние колоды: все карты минус те, что уже на досках или в сбросе
-            # У ВСЕХ игроков до этого момента
-            used_cards = set()
-            for p_snap in current_game_snapshot["players"]:
-                if p_snap: # Проверка, что слот игрока заполнен
-                    for row_list in [p_snap["front"], p_snap["middle"], p_snap["back"], p_snap["dead"]]:
-                        for card_int_val in row_list: used_cards.add(card_int_val)
-            # Добавляем карты, которые герой держит на руках (они тоже вышли из колоды)
-            for card_int_val in current_game_snapshot["hero_to_play_cards"]: used_cards.add(card_int_val)
+                # Состояние колоды
+                used_cards = set()
+                for p_snap in current_game_snapshot["players"]:
+                    if p_snap:
+                        for row_list in [p_snap["front"], p_snap["middle"], p_snap["back"], p_snap["dead"]]:
+                            for card_int_val in row_list:
+                                if card_int_val is not None: used_cards.add(card_int_val)
 
-            full_deck_ints = [Card.new(r + s) for r in _CARD_RANK_STR for s in _CARD_SUIT_STR] # Генерируем полную колоду
-            current_game_snapshot["deck_state"] = [c for c in full_deck_ints if c not in used_cards]
+                full_deck_ints = [Card.new(r + s) for r in _CARD_RANK_STR for s in _CARD_SUIT_STR]
+                current_game_snapshot["deck_state"] = [c for c in full_deck_ints if c not in used_cards]
 
-            game_initial_states.append(current_game_snapshot)
+                # Проверка: если это начало игры (target_game_round=1), то в колоде должно быть 52 карты
+                # (т.к. доски и сброс еще пустые).
+                # Если это не так, значит, что-то не так с картами в HH или их парсингом.
+                if target_game_round == 1 and len(current_game_snapshot["deck_state"]) != NUM_CARDS:
+                    # print(f"Warning: Hand {hand_info['hand_id']}, target_game_round 1: Expected {NUM_CARDS} in deck, found {len(current_game_snapshot['deck_state'])}. Used: {used_cards}")
+                    # Можно добавить более детальный вывод или пропустить это состояние
+                    pass
+
+                game_initial_states.append(current_game_snapshot)
+                continue  # Переходим к следующей руке в self.parsed_hands
+
+            # Если был break во внутреннем цикле (из-за ошибки с оппонентом), эта рука пропускается
+            # print(f"Skipping hand {hand_info['hand_id']} due to opponent processing error.")
 
         return game_initial_states
 

@@ -147,99 +147,85 @@ class OfcEnvV2(gym.Env):
 
     def reset_to_state(self, initial_state_snapshot: Dict[str, Any], seed: Optional[int] = None) -> Tuple[
         Dict[str, np.ndarray], Dict[str, Any]]:
-        """
-        Инициализирует среду с заданного состояния игры.
-        initial_state_snapshot: Словарь, содержащий 'players', 'round', 'current_player_ind', 'deck_state'.
-        """
-        super().reset(seed=seed)  # Для инициализации self.np_random
+        super().reset(seed=seed)
 
-        # Создаем пустой объект OfcGame или используем специальный конструктор, если есть
-        # Важно, чтобы OfcGame позволял установить свое состояние извне.
-        # Это может потребовать модификации OfcGame.
         num_players_snapshot = len(initial_state_snapshot["players"])
-        # Для OfcGameBase нужен game_id, max_player, button, hero
-        # Мы можем не знать button из HH, но можем знать current_player
-        # Предположим, hero_idx всегда 0 в нашей среде
-        # button можно установить по orderIndex последнего игрока
+        hero_snapshot_idx = initial_state_snapshot.get("current_player_ind", 0)
 
-        # Находим максимальный orderIndex для определения button_ind
-        max_order_idx = -1
-        for p_data in initial_state_snapshot["players"]:
-            if p_data:  # Проверяем, что слот игрока не None
-                # orderIndex неявно есть в структуре hero_data/opp_data из HHParser, но не в snapshot
-                # Нужно его передавать или вычислять из позиции в списке initial_state_snapshot["players"]
-                # Пока предположим, что initial_state_snapshot["players"] уже упорядочен по orderIndex
-                pass  # Логика button_ind требует доработки
-
-        # Пока используем дефолтный button_ind
+        # Создаем игру с пустыми руками
         self.game = OfcGame(game_id="curriculum",
-                                max_player=num_players_snapshot,
-                                button=num_players_snapshot - 1,  # Пример
-                                hero=initial_state_snapshot.get("current_player_ind", 0))  # Герой - это тот, чей ход
+                            max_player=num_players_snapshot,
+                            button=initial_state_snapshot.get("button_ind", num_players_snapshot - 1),
+                            hero=hero_snapshot_idx,
+                            seed=seed) # Передаем сид для инициализации колоды игры
 
-        # Устанавливаем состояние каждого игрока
-        self.game.players = []  # Очищаем дефолтных игроков
+        # Устанавливаем состояние каждого игрока (доски, сброс, но to_play пока пустой)
+        self.game.players = []
         for i, player_data_snapshot in enumerate(initial_state_snapshot["players"]):
-            if player_data_snapshot is None:  # Если в HH было меньше игроков, чем MAX_OPPONENTS
-                # Создаем фиктивного пустого игрока или пропускаем
-                # Для простоты пока будем ожидать полного списка
-                # Это потребует доработки HHParser, чтобы он всегда возвращал список нужной длины
-                # с None для отсутствующих оппонентов.
-                # Либо OfcGame должен уметь работать с разным числом игроков.
-                # Пока пропустим, если игрок None
-                continue
-
+            if player_data_snapshot is None: continue
             p = OfcPlayer(name=player_data_snapshot["name"], fantasy=player_data_snapshot["fantasy"])
-            p.front = list(player_data_snapshot["front"])  # Копируем списки
+            p.front = list(player_data_snapshot["front"])
             p.middle = list(player_data_snapshot["middle"])
             p.back = list(player_data_snapshot["back"])
             p.dead = list(player_data_snapshot["dead"])
-            p.to_play = list(player_data_snapshot["to_play"])
+            p.to_play = [] # Инициализируем пустым!
             p.stack = player_data_snapshot["stack"]
             self.game.players.append(p)
             if player_data_snapshot.get("hero", False):
-                self.game.hero = i  # Обновляем индекс героя в игре, если он отличается
+                self.game.hero = i
 
         self.game.round = initial_state_snapshot["round"]
-        self.game.current_player_ind = initial_state_snapshot["current_player_ind"]
-        # self.game.button_ind = ... # Нужно установить из initial_state_snapshot, если есть
+        self.game.current_player_ind = hero_snapshot_idx # Устанавливаем, чей ход
 
-        # Устанавливаем состояние колоды в OfcGame
-        # Это потребует, чтобы OfcGame имел метод для установки колоды или работал с переданным списком карт
+        # Устанавливаем кастомную колоду (карты, которые ЕЩЕ НЕ БЫЛИ на доске/в сбросе)
         if hasattr(self.game, 'deck') and hasattr(self.game.deck, 'cards'):
-            self.game.deck.cards = list(initial_state_snapshot["deck_state"])  # Копируем
-            self.game.deck._random.shuffle(self.game.deck.cards)   # Перемешиваем "оставшуюся" колоду
+            self.game.deck.cards = list(initial_state_snapshot["deck_state"])
+            self.game.deck._random.shuffle(self.game.deck.cards) # Важно перемешать "оставшуюся" колоду
         else:
-            print("Warning: Cannot set deck state in OfcGame. Curriculum learning might be inexact.")
+            print("Warning: Cannot set custom deck state in OfcGame.")
 
-        # Устанавливаем начальные фазы для Curriculum Learning
-        # Герой должен сделать ход, так что phase PLACE_1 или DISCARD
-        num_hero_to_play = len(self.game.players[self.game.current_player_ind].to_play)
-        if num_hero_to_play == 5:  # Начало раунда 1 (не должно быть для curriculum > 1 раунда)
+        # --- РАЗДАЧА КАРТ ТЕКУЩЕМУ ИГРОКУ (ГЕРОЮ) ---
+        player_to_act = self.game.players[self.game.current_player_ind]
+        if not player_to_act.to_play: # Если рука пуста (должна быть)
+            num_cards_to_deal = 5 if self.game.round == 1 else 3
+            try:
+                # Убедимся, что в колоде достаточно карт
+                if len(self.game.deck.cards) >= num_cards_to_deal:
+                    dealt_cards = self.game.deck.draw(num_cards_to_deal)
+                    player_to_act.deal(dealt_cards) # Используем метод deal игрока
+                    # print(f"DEBUG reset_to_state: Dealt {len(dealt_cards)} cards to player {self.game.current_player_ind}. Hand: {Card.ints_to_pretty_str(player_to_act.to_play)}")
+                else:
+                    print(f"ERROR in reset_to_state: Not enough cards in deck ({len(self.game.deck.cards)}) to deal {num_cards_to_deal} to player {self.game.current_player_ind}.")
+                    # Это критическая ошибка, среда не может быть корректно инициализирована
+                    # Можно выбросить исключение или вернуть состояние, где игра окончена
+                    # Пока просто установим пустую руку и позволим тестам упасть, если нет легальных ходов
+                    player_to_act.to_play = []
+
+            except IndexError: # Если self.game.deck.draw() падает из-за пустой колоды
+                print(f"ERROR in reset_to_state: Deck is empty when trying to deal cards to player {self.game.current_player_ind}.")
+                player_to_act.to_play = []
+
+
+        # Устанавливаем начальные фазы на основе РАЗДАННЫХ карт
+        num_hero_to_play = len(player_to_act.to_play)
+        if num_hero_to_play == 5:
             self.current_turn_phase = TURN_PHASE_PLACE_1
             self.active_card_idx = 0
-        elif num_hero_to_play == 3:  # Раунды 2+
+        elif num_hero_to_play == 3:
             self.current_turn_phase = TURN_PHASE_DISCARD
             self.active_card_idx = -1
-        elif num_hero_to_play == 2 or num_hero_to_play == 1:  # Уже в середине хода (например, после сброса)
-            self.current_turn_phase = TURN_PHASE_PLACE_1
-            self.active_card_idx = 0
-        else:
-            # Если 0 карт, то ход уже должен был быть завершен, или это конец игры
-            if not self.game.is_game_over():
-                print(f"Warning: Resetting to state where hero has {num_hero_to_play} cards but it's their turn.")
-            self.current_turn_phase = -1  # Неопределенная фаза
+        else: # Если роздано 0, 1, 2, 4 карты - это проблема
+            if not self.game.is_game_over(): # Только если игра не должна быть окончена из-за конца колоды
+                print(f"Warning reset_to_state: Hero has {num_hero_to_play} cards after dealing. Setting to undefined phase.")
+            self.current_turn_phase = -1
             self.active_card_idx = -1
 
-        self.cards_placed_this_turn = 0  # Сбрасываем счетчик
-
-        # Если ход не у героя (не должно быть при правильной генерации состояний curriculum),
-        # но на всякий случай:
-        # self._play_opponent_turns_if_needed() # Это не нужно, если состояние уже для хода героя
+        self.cards_placed_this_turn = 0
+        self._last_mask = np.zeros(ACTION_SPACE_DIM, dtype=bool) # Инициализируем _last_mask
 
         observation = self._get_obs()
         info = self._get_info()
-        # self._last_mask = observation.get('action_mask', self._last_mask)  # Обновляем маску
+        # _last_mask уже будет обновлен внутри _get_obs
 
         if self.render_mode == "human": self._render_frame()
         return observation, info
@@ -392,65 +378,53 @@ class OfcEnvV2(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
-
     def _play_opponent_turns_if_needed(self):
-        """Проигрывает ходы оппонентов, пока ход не вернется к герою или игра не закончится."""
         if self.game is None: return
 
         while self.game.current_player_ind != self.hero_idx and not self.game.is_game_over():
             opp_idx = self.game.current_player_ind
-            opp_agent = self.opponent_agents[opp_idx - 1] # Индексы агентов 0..N-2 для оппонентов 1..N-1
-            opponent = self.game.current_player()
+            opponent = self.game.players[opp_idx]  # Используем players из self.game
 
-            # Оппонент принимает решение (пока случайное)
-            # Случайному агенту нужно передать ВСЕ возможные действия (весь ход целиком)
-            # Это расхождение с нашим последовательным подходом!
-            # Нужно либо переписать случайного агента под последовательные шаги,
-            # либо сделать так, чтобы он возвращал полный ход за раз.
-            # Пока сделаем полный ход для простоты (но это не идеально).
+            # --- РАЗДАЧА КАРТ ОППОНЕНТУ, ЕСЛИ ЕГО ХОД И РУКА ПУСТА ---
+            if not opponent.to_play and not getattr(opponent, 'fantasy', False):
+                num_cards_to_deal_opp = 5 if self.game.round == 1 else 3
+                try:
+                    if len(self.game.deck.cards) >= num_cards_to_deal_opp:
+                        dealt_cards_opp = self.game.deck.draw(num_cards_to_deal_opp)
+                        opponent.deal(dealt_cards_opp)
+                        # print(f"DEBUG opponent_turn: Dealt {len(dealt_cards_opp)} cards to opponent {opp_idx}. Hand: {Card.ints_to_pretty_str(opponent.to_play)}")
+                    else:
+                        print(f"ERROR in _play_opponent_turns: Not enough cards for opponent {opp_idx}.")
+                        # Если не можем раздать, оппонент не может ходить, возможно, игра должна закончиться
+                        # или это ошибка в логике/колоде. Пропускаем ход оппонента.
+                        self.game._next_player()  # Пропускаем ход оппонента
+                        continue
+                except IndexError:
+                    print(f"ERROR in _play_opponent_turns: Deck empty for opponent {opp_idx}.")
+                    self.game._next_player()
+                    continue
 
-            # --- Начало: Логика полного хода для случайного оппонента ---
-            num_to_play = len(opponent.to_play)
-            if num_to_play == 5: # Раунд 1
-                # Выбираем случайный *валидный* шаблон размещения из первых 232
-                from ofc_encoder import legal_actions as old_legal_actions, ACTION_SPACE as OLD_ACTION_SPACE, action_to_dict as old_action_to_dict
-                legal_action_indices = old_legal_actions(opponent) # Используем старый кодер
-                if not legal_action_indices: # Нет легальных ходов? Маловероятно
-                    print(f"Warning: Opponent {opp_idx} has no legal actions in round 1?")
-                    break # Выход из цикла
-                random_action_id = self.np_random.choice(legal_action_indices)
-                action_dict = old_action_to_dict(random_action_id, opponent.to_play)
-                self.game.play(action_dict) # Используем старый метод play
+            # Теперь вызываем логику хода оппонента (старая, через ofc_encoder)
+            # ... (ваш существующий код для хода оппонента из ofc_encoder) ...
+            num_to_play_opp = len(opponent.to_play)
+            if num_to_play_opp > 0:  # Только если есть карты для игры
+                from ofc_encoder import legal_actions as old_legal_actions, action_to_dict as old_action_to_dict
+                legal_action_indices_opp = old_legal_actions(opponent)
+                if not legal_action_indices_opp:
+                    print(f"Warning: Opponent {opp_idx} has no legal actions with {num_to_play_opp} cards in hand.")
+                    # Это может быть проблемой, если у него должны быть ходы
+                    # Возможно, нужно просто передать ход дальше
+                    self.game._next_player()
+                    continue  # К следующей итерации while
 
-            elif num_to_play == 3: # Раунды 2+
-                # Выбираем случайный *валидный* шаблон (1 сброс, 2 размещения) из последних 27
-                from ofc_encoder import legal_actions as old_legal_actions, ACTION_SPACE as OLD_ACTION_SPACE, action_to_dict as old_action_to_dict
-                legal_action_indices = old_legal_actions(opponent) # Используем старый кодер
-                if not legal_action_indices:
-                    print(f"Warning: Opponent {opp_idx} has no legal actions in round {self.game.round}?")
-                    break
-                random_action_id = self.np_random.choice(legal_action_indices)
-                action_dict = old_action_to_dict(random_action_id, opponent.to_play)
-                self.game.play(action_dict) # Используем старый метод play
+                random_action_id_opp = self.np_random.choice(legal_action_indices_opp)
+                action_dict_opp = old_action_to_dict(random_action_id_opp, opponent.to_play)
+                self.game.play(action_dict_opp)  # Этот метод должен вызывать _next_player и _next_round
+            elif not getattr(opponent, 'fantasy', False):  # Если не фантазия и нет карт - пропускаем ход
+                print(f"Warning: Opponent {opp_idx} has no cards to play and not in fantasy. Forcing next player.")
+                self.game._next_player()  # Принудительно передаем ход
 
-            elif num_to_play == 0 and not self.game.is_game_over():
-                 # Ход оппонента, но у него нет карт - значит, игра должна была раздать
-                 # Или ошибка логики
-                 print(f"Warning: Opponent {opp_idx}'s turn but no cards to play?")
-                 # Просто передаем ход дальше, предполагая, что игра раздаст позже
-                 self.game.current_player_ind = (self.game.current_player_ind + 1) % self.max_player
-                 continue # Пропускаем остаток цикла
-            else:
-                 # Неожиданное количество карт у оппонента
-                 print(f"Warning: Opponent {opp_idx} has unexpected number of cards: {num_to_play}")
-                 break
-            # --- Конец: Логика полного хода для случайного оппонента ---
-
-            # После хода оппонента проверяем конец игры снова
-            if self.game.is_game_over():
-                break
-
-            # Если игра не окончена, и ход все еще не у героя, продолжаем цикл
+            if self.game.is_game_over(): break
 
     def render(self):
         if self.render_mode == "human":
