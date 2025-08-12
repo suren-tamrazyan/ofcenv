@@ -36,7 +36,7 @@ class HHParser:
     def parse_files(self):
         """Читает все .txt файлы из директории и парсит их."""
         for filename in os.listdir(self.hh_files_directory):
-            if filename.endswith(".txt"):  # или другое расширение, если необходимо
+            if filename.endswith(".hh") or filename.endswith(".txt"):  # или другое расширение, если необходимо
                 filepath = os.path.join(self.hh_files_directory, filename)
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
@@ -73,6 +73,14 @@ class HHParser:
 
         # handData содержит один ключ (ID раздачи) и значение - список игроков
         for hand_id, players_data in hand_data_dict.items():
+            # --- НОВАЯ ПРОВЕРКА НА ФАНТАЗИЮ ---
+            # Проверяем, находится ли ХОТЯ БЫ ОДИН игрок в фантазии в этой раздаче.
+            is_any_player_in_fantasy = any(player.get("inFantasy", False) for player in players_data)
+            if is_any_player_in_fantasy:
+                # print(f"Skipping hand {hand_id}: a player is in Fantasyland.")
+                continue # Пропускаем всю эту раздачу
+            # --- КОНЕЦ НОВОЙ ПРОВЕРКИ ---
+
             hero_player_data = None
             opponent_player_data_list = []
 
@@ -138,6 +146,9 @@ class HHParser:
             num_players = 1 + len(opponents_data)
             hero_order_idx = hero_data["orderIndex"]
             current_game_snapshot["current_player_ind"] = hero_order_idx
+
+            button_index = (hero_order_idx - 1 + num_players) % num_players
+            current_game_snapshot["button_ind"] = button_index
 
             # --- Определение, кто ходил до героя в этом раунде ---
             # Это важно для правильного состояния досок оппонентов.

@@ -101,6 +101,48 @@ class InfoCallback(BaseCallback): # Переименован для ясност
                  pass # Молча пропускаем, если не удалось получить инфо
         return True
 
+# --- НОВАЯ ФУНКЦИЯ для создания Curriculum Env ---
+def curriculum_make_env_fn(rank: int, seed: int = 0, initial_states_for_stage: Optional[List[Dict]] = None):
+    """
+    Создает среду для VecEnv, которая при вызове reset() инициализируется
+    случайным состоянием из списка initial_states_for_stage.
+    """
+    def _init():
+        env_instance = gym.make(ENV_ID) # ENV_ID должен быть зарегистрирован
+        env_instance = Monitor(env_instance)
+
+        # Переопределяем метод reset ДО ActionMasker, если это возможно,
+        # или после, если ActionMasker переопределяет reset.
+        # Безопаснее всего - переопределить reset у базовой среды.
+        if initial_states_for_stage:
+            # print(f"Rank {rank}: Overriding reset for curriculum with {len(initial_states_for_stage)} states.")
+            # Сохраняем оригинальный reset базовой среды
+            original_unwrapped_reset = env_instance.unwrapped.reset
+
+            def curriculum_reset(*args, **kwargs):
+                # Выбираем случайное начальное состояние
+                # Используем генератор случайных чисел среды, если он есть, или numpy
+                rng = env_instance.unwrapped.np_random if hasattr(env_instance.unwrapped, 'np_random') else np.random
+                chosen_state_snapshot = rng.choice(initial_states_for_stage)
+
+                # Вызываем reset_to_state
+                current_seed = kwargs.get('seed', seed + rank)
+                # Важно: reset_to_state должен быть методом OfcEnvV2
+                if hasattr(env_instance.unwrapped, 'reset_to_state'):
+                    return env_instance.unwrapped.reset_to_state(chosen_state_snapshot, seed=current_seed)
+                else:
+                    print(f"ERROR in curriculum_reset: unwrapped env {type(env_instance.unwrapped)} has no reset_to_state method.")
+                    return original_unwrapped_reset(*args, **kwargs) # Возврат к обычному reset
+
+            # Заменяем метод reset у базовой, не обернутой среды
+            env_instance.unwrapped.reset = curriculum_reset
+
+        # Обертка ActionMasker (применяется после возможной замены reset)
+        env_instance = ActionMasker(env_instance, mask_fn)
+        return env_instance
+    return _init
+
+
 # --- Основная функция обучения ---
 def train_ofc_agent(
     total_timesteps: int = 1_000_000,
@@ -123,7 +165,9 @@ def train_ofc_agent(
     eval_freq_factor: int = 10000,
     # --- НОВЫЕ ПАРАМЕТРЫ для VecEnv ---
     vec_env_type: str = "dummy",  # "dummy" или "subproc"
-    n_envs: int = 1  # Количество окружений (для subproc > 1)
+    n_envs: int = 1,  # Количество окружений (для subproc > 1)
+    # --- НОВЫЙ ПАРАМЕТР для Curriculum ---
+    initial_states_for_curriculum: Optional[List[Dict]] = None
     ):
     """
     Функция для обучения или дообучения агента OFC.
@@ -143,43 +187,49 @@ def train_ofc_agent(
     os.makedirs(tensorboard_log_path, exist_ok=True)
     os.makedirs(eval_log_path, exist_ok=True)
 
-    # --- Настройка среды ---
-    # def make_env_fn():
-    #     env = gym.make(ENV_ID)
-    #     env = Monitor(env) # Оборачиваем в Monitor для корректной статистики
-    #     env = ActionMasker(env, mask_fn)
-    #     return env
-    # vec_env = DummyVecEnv([make_env_fn])
-    def make_env_fn_for_vec(rank: int, seed: int = 0):
-        """
-        Утилитарная функция для создания окружений для VecEnv.
-        :param rank: индекс окружения
-        :param seed: начальное число для генератора случайных чисел
-        """
-        def _init():
-            env = gym.make(ENV_ID)
-            # Важно: Monitor и другие обертки, не зависящие от rank, лучше применять к базовой среде
-            env = Monitor(env)
-            env = ActionMasker(env, mask_fn)
-            # Устанавливаем seed для каждого окружения, если нужно (для воспроизводимости в SubprocVecEnv)
-            # env.reset(seed=seed + rank) # Gymnasium reset принимает seed
-            # Однако SB3 VecEnv сам управляет сидами, поэтому явный reset здесь может быть не нужен
-            return env
-        # Устанавливаем seed для make_vec_env, если используется SubprocVecEnv
-        # set_random_seed(seed) # SB3 set_random_seed не нужен здесь, т.к. seed передается в PPO
-        return _init
+    # --- Настройка среды (МОДИФИЦИРОВАННАЯ ДЛЯ CURRICULUM) ---
+    # Выбираем, какую функцию make_env использовать
+    if initial_states_for_curriculum:
+        print(f"Curriculum mode enabled with {len(initial_states_for_curriculum)} initial states.")
+        make_env_to_use = curriculum_make_env_fn
+        # Передаем список состояний в функцию
+        env_fns = [make_env_to_use(i, seed_val, initial_states_for_curriculum) for i in range(n_envs)]
+    else:
+        print("Standard training mode (starting from round 1).")
+        # Используем старую make_env_fn_for_vec, которая делает обычный reset
+        # (нужно ее определить или скопировать сюда)
+        def make_env_fn_for_vec(rank: int, seed: int = 0):
+            def make_env_fn_for_vec(rank: int, seed: int = 0):
+                """
+                Утилитарная функция для создания окружений для VecEnv.
+                :param rank: индекс окружения
+                :param seed: начальное число для генератора случайных чисел
+                """
+                def _init():
+                    env = gym.make(ENV_ID)
+                    # Важно: Monitor и другие обертки, не зависящие от rank, лучше применять к базовой среде
+                    env = Monitor(env)
+                    env = ActionMasker(env, mask_fn)
+                    # Устанавливаем seed для каждого окружения, если нужно (для воспроизводимости в SubprocVecEnv)
+                    # env.reset(seed=seed + rank) # Gymnasium reset принимает seed
+                    # Однако SB3 VecEnv сам управляет сидами, поэтому явный reset здесь может быть не нужен
+                    return env
+                # Устанавливаем seed для make_vec_env, если используется SubprocVecEnv
+                # set_random_seed(seed) # SB3 set_random_seed не нужен здесь, т.к. seed передается в PPO
+                return _init
+        env_fns = [make_env_fn_for_vec(i, seed_val) for i in range(n_envs)]
 
     # --- ВЫБОР ТИПА VEC_ENV ---
     if vec_env_type.lower() == "subproc" and n_envs > 1:
         print(f"Creating SubprocVecEnv with {n_envs} environments.")
         # Для SubprocVecEnv каждая среда должна быть функцией, возвращающей среду
-        vec_env = SubprocVecEnv([make_env_fn_for_vec(i, seed_val) for i in range(n_envs)])
+        vec_env = SubprocVecEnv(env_fns)
     elif vec_env_type.lower() == "dummy" or n_envs == 1:
         if vec_env_type.lower() == "subproc" and n_envs == 1:
             print("Warning: n_envs=1 for SubprocVecEnv, defaulting to DummyVecEnv.")
         print(f"Creating DummyVecEnv with {n_envs} environment(s).")
         # Для DummyVecEnv можно передать список функций или одну функцию, если n_envs=1
-        vec_env = DummyVecEnv([make_env_fn_for_vec(i, seed_val) for i in range(n_envs)])
+        vec_env = DummyVecEnv(env_fns)
     else:
         raise ValueError(f"Unsupported vec_env_type: {vec_env_type} or invalid n_envs: {n_envs}")
     # --- КОНЕЦ ВЫБОРА ТИПА VEC_ENV ---
@@ -272,11 +322,20 @@ def train_ofc_agent(
     # eval_env_instance = Monitor(eval_env_instance)
     # eval_env_instance = ActionMasker(eval_env_instance, mask_fn)
     # eval_vec_env = DummyVecEnv([lambda: eval_env_instance])
-    # Создаем eval_vec_env с таким же типом и количеством, как и основной vec_env
-    if vec_env_type.lower() == "subproc" and n_envs > 1:
-        eval_vec_env = SubprocVecEnv([make_env_fn_for_vec(i, seed_val + n_envs + i) for i in range(n_envs)]) # Разные сиды для eval
+    print("Creating evaluation environment...")
+    # EvalCallback должен оценивать на ТОЙ ЖЕ ЗАДАЧЕ, которой агент обучается.
+    # Поэтому мы используем ту же логику создания сред, что и для vec_env.
+    if initial_states_for_curriculum:
+        # Оценка на curriculum-задаче
+        eval_env_fns = [curriculum_make_env_fn(i, seed_val + n_envs + i, initial_states_for_curriculum) for i in range(n_envs)]
     else:
-        eval_vec_env = DummyVecEnv([make_env_fn_for_vec(i, seed_val + n_envs + i) for i in range(n_envs)])
+        # Оценка на полной игре (стандартное обучение)
+        eval_env_fns = [make_env_fn_for_vec(i, seed_val + n_envs + i) for i in range(n_envs)]
+
+    if vec_env_type.lower() == "subproc" and n_envs > 1:
+        eval_vec_env = SubprocVecEnv(eval_env_fns)
+    else:
+        eval_vec_env = DummyVecEnv(eval_env_fns)
 
     eval_callback = MaskableEvalCallback( # Используем MaskableEvalCallback
         eval_vec_env,

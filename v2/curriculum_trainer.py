@@ -1,0 +1,117 @@
+import os
+from typing import Optional, List, Dict, Any
+import numpy as np
+import torch
+import gymnasium as gym
+
+# Импортируем только то, что нужно
+from ppo_training_script_v2 import train_ofc_agent, evaluate_ofc_agent
+from hh_parser import HHParser
+# Убираем лишние импорты, так как они теперь внутри ppo_training_script_v2
+
+# --- Настройки Curriculum ---
+HH_FILES_DIR = "D:\\develop\\temp\\poker\\Eureka\\1"
+LOG_DIR_BASE_CURRICULUM = "./ofc_curriculum_runs/"
+N_ENVS_CURRICULUM = 4 # Количество параллельных сред для обучения на каждом этапе
+
+# Игровые раунды (1-5)
+# Напоминание: HHParser.get_states_for_round ожидает игровой раунд (1, 2, 3, 4, 5)
+CURRICULUM_STAGES = [
+    {"placement_round_hh": 5, "total_timesteps": 500_000, "run_name_suffix": "_stage_r5"}, # Последний раунд
+    #{"placement_round_hh": 4, "total_timesteps": 700_000, "run_name_suffix": "_stage_r4"},
+    #{"placement_round_hh": 3, "total_timesteps": 1_000_000, "run_name_suffix": "_stage_r3"},
+    #{"placement_round_hh": 2, "total_timesteps": 1_500_000, "run_name_suffix": "_stage_r2"},
+    # {"placement_round_hh": 1, "total_timesteps": 2_000_000, "run_name_suffix": "_stage_r1"}, # Полная игра (без curriculum)
+]
+
+# Общие параметры для train_ofc_agent
+COMMON_TRAINING_CONFIG = {
+    "log_dir_base": LOG_DIR_BASE_CURRICULUM,
+    "learning_rate_start": 1e-4,
+    "learning_rate_end": 5e-6,
+    "learning_rate_end_fraction": 0.95,
+    "ent_coef_val": 0.005,
+    "vf_coef_val": 0.7,
+    "net_arch_pi": [512, 256, 128],
+    "net_arch_vf": [512, 256, 128],
+    "activation_fn_str": "ReLU",
+    "n_steps_val": 2048,
+    "batch_size_val": 256,
+    "n_epochs_val": 10,
+    "seed_val": 42,
+    "n_eval_episodes": 50,
+    "eval_freq_factor": 20000,
+    "vec_env_type": "subproc" if N_ENVS_CURRICULUM > 1 else "dummy",
+    "n_envs": N_ENVS_CURRICULUM
+}
+
+if __name__ == "__main__":
+    if torch.cuda.is_available():
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+
+    # 1. Парсим все HH один раз
+    print("Parsing Hand History files...")
+    hh_parser = HHParser(hh_files_directory=HH_FILES_DIR)
+    hh_parser.parse_files()
+    if not hh_parser.parsed_hands:
+        print(f"Error: No hands parsed from {HH_FILES_DIR}. Exiting.")
+        exit()
+
+    previous_stage_model_path = None
+
+    for stage_idx, stage_config in enumerate(CURRICULUM_STAGES):
+        game_round = stage_config["placement_round_hh"]
+        stage_total_timesteps = stage_config["total_timesteps"]
+        run_name = f"Curriculum{stage_config['run_name_suffix']}"
+
+        print(f"\n--- Starting Curriculum Stage {stage_idx + 1}/{len(CURRICULUM_STAGES)} ---")
+        print(f"Target Game Round: {game_round}")
+        print(f"Run Name: {run_name}")
+
+        # 2. Генерируем начальные состояния для текущего этапа
+        initial_states_for_this_stage = None
+        # Стадия 1 (полная игра) не требует начальных состояний из HH
+        if game_round > 1:
+            print(f"Generating initial states for game round {game_round}...")
+            initial_states_for_this_stage = hh_parser.get_states_for_round(game_round)
+            if not initial_states_for_this_stage:
+                print(f"Warning: No initial states found for game round {game_round}. Skipping stage.")
+                continue
+            print(f"Generated {len(initial_states_for_this_stage)} states.")
+        else: # Для game_round = 1
+            print("This is the full game stage, no initial states from HH will be used for reset.")
+
+
+        # 3. Обновляем конфигурацию обучения для текущего этапа
+        current_stage_training_config = COMMON_TRAINING_CONFIG.copy()
+        current_stage_training_config["total_timesteps"] = stage_total_timesteps
+        current_stage_training_config["run_name"] = run_name
+        if previous_stage_model_path:
+            current_stage_training_config["load_model_path"] = previous_stage_model_path
+            print(f"Continuing training from: {previous_stage_model_path}")
+        else:
+            current_stage_training_config["load_model_path"] = None
+            print("Starting training new model for the first stage.")
+
+        # --- ДОБАВЛЯЕМ СПИСОК СОСТОЯНИЙ В КОНФИГУРАЦИЮ ---
+        current_stage_training_config["initial_states_for_curriculum"] = initial_states_for_this_stage
+
+        # --- ЗАПУСКАЕМ ОБУЧЕНИЕ для текущего этапа ---
+        train_ofc_agent(**current_stage_training_config)
+
+        # Сохраняем путь к модели, обученной на этом этапе, для следующего
+        previous_stage_model_path = os.path.join(
+            current_stage_training_config["log_dir_base"],
+            current_stage_training_config["run_name"],
+            "ppo_ofc_model_final" # Имя, которое сохраняет train_ofc_agent
+        )
+        print(f"Model for next stage is now at: {previous_stage_model_path}")
+
+    print("\n--- Curriculum Learning Finished ---")
+
+    # Оценка финальной модели, обученной на полной игре
+    if previous_stage_model_path and os.path.exists(previous_stage_model_path + ".zip"):
+        print("\nEvaluating final model from curriculum...")
+        evaluate_ofc_agent(previous_stage_model_path, n_episodes=100, use_masking_in_predict=True)
+    else:
+        print("No final model from curriculum to evaluate.")

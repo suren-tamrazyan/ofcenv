@@ -151,11 +151,24 @@ class OfcEnvV2(gym.Env):
 
         num_players_snapshot = len(initial_state_snapshot["players"])
         hero_snapshot_idx = initial_state_snapshot.get("current_player_ind", 0)
+        button_snapshot_idx = initial_state_snapshot.get("button_ind")
 
+        if hero_snapshot_idx is None or button_snapshot_idx is None:
+            raise ValueError("snapshot must contain 'current_player_ind' and 'button_ind'")
+
+        # --- АДАПТАЦИЯ СРЕДЫ ПОД КОЛИЧЕСТВО ИГРОКОВ В SNAPSHOT ---
+        if self.max_player != num_players_snapshot:
+            # print(f"DEBUG: Adapting env from max_player={self.max_player} to {num_players_snapshot}")
+            self.max_player = num_players_snapshot
+            num_opponents = num_players_snapshot - 1
+            self.opponent_agents = [OfcRandomAgent() for _ in range(num_opponents)]
+
+        self.hero_idx = hero_snapshot_idx
+        self.button_ind = button_snapshot_idx
         # Создаем игру с пустыми руками
         self.game = OfcGame(game_id="curriculum",
                             max_player=num_players_snapshot,
-                            button=initial_state_snapshot.get("button_ind", num_players_snapshot - 1),
+                            button=button_snapshot_idx,
                             hero=hero_snapshot_idx,
                             seed=seed) # Передаем сид для инициализации колоды игры
 
