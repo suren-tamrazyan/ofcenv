@@ -188,6 +188,17 @@ def train_ofc_agent(
     os.makedirs(eval_log_path, exist_ok=True)
 
     # --- Настройка среды (МОДИФИЦИРОВАННАЯ ДЛЯ CURRICULUM) ---
+    # Определяем СТАНДАРТНУЮ функцию make_env, она будет доступна везде
+    def make_env_fn_for_vec(rank: int, seed: int = 0):
+        """Создает стандартную среду с обычным reset."""
+        def _init():
+            env = gym.make(ENV_ID)
+            env = Monitor(env)
+            env = ActionMasker(env, mask_fn)
+            # env.reset(seed=seed + rank) # Не нужно, SB3 управляет сидами
+            return env
+        return _init
+
     # Выбираем, какую функцию make_env использовать
     if initial_states_for_curriculum:
         print(f"Curriculum mode enabled with {len(initial_states_for_curriculum)} initial states.")
@@ -197,26 +208,6 @@ def train_ofc_agent(
     else:
         print("Standard training mode (starting from round 1).")
         # Используем старую make_env_fn_for_vec, которая делает обычный reset
-        # (нужно ее определить или скопировать сюда)
-        def make_env_fn_for_vec(rank: int, seed: int = 0):
-            def make_env_fn_for_vec(rank: int, seed: int = 0):
-                """
-                Утилитарная функция для создания окружений для VecEnv.
-                :param rank: индекс окружения
-                :param seed: начальное число для генератора случайных чисел
-                """
-                def _init():
-                    env = gym.make(ENV_ID)
-                    # Важно: Monitor и другие обертки, не зависящие от rank, лучше применять к базовой среде
-                    env = Monitor(env)
-                    env = ActionMasker(env, mask_fn)
-                    # Устанавливаем seed для каждого окружения, если нужно (для воспроизводимости в SubprocVecEnv)
-                    # env.reset(seed=seed + rank) # Gymnasium reset принимает seed
-                    # Однако SB3 VecEnv сам управляет сидами, поэтому явный reset здесь может быть не нужен
-                    return env
-                # Устанавливаем seed для make_vec_env, если используется SubprocVecEnv
-                # set_random_seed(seed) # SB3 set_random_seed не нужен здесь, т.к. seed передается в PPO
-                return _init
         env_fns = [make_env_fn_for_vec(i, seed_val) for i in range(n_envs)]
 
     # --- ВЫБОР ТИПА VEC_ENV ---
@@ -505,7 +496,7 @@ if __name__ == "__main__":
         "net_arch_vf": [512, 256],
         "n_steps_val": 2048,
         "batch_size_val": 128,
-        "load_model_path": "./ofc_colab_runs/PPO_Run1/ppo_ofc_model_final", # None, # "./ofc_colab_runs/PPO_Run1/ppo_ofc_model_final" # Пример для продолжения
+        "load_model_path": None, # None, # "./ofc_colab_runs/PPO_Run1/ppo_ofc_model_final" # Пример для продолжения
         "eval_freq_factor": 5000, # Оценивать каждые ~5k шагов
         "n_eval_episodes": 10, # Меньше эпизодов для быстрой оценки
         "vec_env_type": "subproc",
