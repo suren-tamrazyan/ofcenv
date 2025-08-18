@@ -10,15 +10,16 @@ from hh_parser import HHParser
 # Убираем лишние импорты, так как они теперь внутри ppo_training_script_v2
 
 # --- Настройки Curriculum ---
-HH_FILES_DIR = "D:\\develop\\temp\\poker\\Eureka\\1"
+HH_FILES_DIR_TRAIN = "D:\\develop\\temp\\poker\\Eureka\\hh\\train\\" # <<--- ПУТЬ К ОБУЧАЮЩИМ HH
+HH_FILES_DIR_VALIDATION = "D:\\develop\\temp\\poker\\Eureka\\hh\\validation\\" # <<--- ПУТЬ К ВАЛИДАЦИОННЫМ HH
 LOG_DIR_BASE_CURRICULUM = "./ofc_curriculum_runs/"
 N_ENVS_CURRICULUM = 4 # Количество параллельных сред для обучения на каждом этапе
 
 # Игровые раунды (1-5)
 # Напоминание: HHParser.get_states_for_round ожидает игровой раунд (1, 2, 3, 4, 5)
 CURRICULUM_STAGES = [
-    {"placement_round_hh": 5, "total_timesteps": 500_000, "run_name_suffix": "_stage_r5"}, # Последний раунд
-    #{"placement_round_hh": 4, "total_timesteps": 700_000, "run_name_suffix": "_stage_r4"},
+    {"placement_round_hh": 5, "total_timesteps": 50_000, "run_name_suffix": "_stage_r5"}, # Последний раунд
+    {"placement_round_hh": 4, "total_timesteps": 100_000, "run_name_suffix": "_stage_r4"},
     #{"placement_round_hh": 3, "total_timesteps": 1_000_000, "run_name_suffix": "_stage_r3"},
     #{"placement_round_hh": 2, "total_timesteps": 1_500_000, "run_name_suffix": "_stage_r2"},
     # {"placement_round_hh": 1, "total_timesteps": 2_000_000, "run_name_suffix": "_stage_r1"}, # Полная игра (без curriculum)
@@ -31,7 +32,7 @@ COMMON_TRAINING_CONFIG = {
     "learning_rate_end": 5e-6,
     "learning_rate_end_fraction": 0.95,
     "ent_coef_val": 0.005,
-    "vf_coef_val": 0.7,
+    "vf_coef_val": 2.0, #0.7,
     "net_arch_pi": [512, 256, 128],
     "net_arch_vf": [512, 256, 128],
     "activation_fn_str": "ReLU",
@@ -50,12 +51,22 @@ if __name__ == "__main__":
         print(f"Using GPU: {torch.cuda.get_device_name(0)}")
 
     # 1. Парсим все HH один раз
-    print("Parsing Hand History files...")
-    hh_parser = HHParser(hh_files_directory=HH_FILES_DIR)
-    hh_parser.parse_files()
-    if not hh_parser.parsed_hands:
-        print(f"Error: No hands parsed from {HH_FILES_DIR}. Exiting.")
+    print("--- Parsing Hand History files ---")
+    print(f"Parsing TRAINING data from: {HH_FILES_DIR_TRAIN}")
+    train_hh_parser = HHParser(hh_files_directory=HH_FILES_DIR_TRAIN)
+    train_hh_parser.parse_files()
+    if not train_hh_parser.parsed_hands:
+        print(f"Error: No training hands parsed from {HH_FILES_DIR_TRAIN}. Exiting.")
         exit()
+
+    print(f"Parsing VALIDATION data from: {HH_FILES_DIR_VALIDATION}")
+    validation_hh_parser = HHParser(hh_files_directory=HH_FILES_DIR_VALIDATION)
+    validation_hh_parser.parse_files()
+    if not validation_hh_parser.parsed_hands:
+        print(f"Warning: No validation hands parsed from {HH_FILES_DIR_VALIDATION}. Evaluation will be less reliable.")
+        # Можно сделать так, чтобы валидационный парсер использовал те же данные, что и обучающий,
+        # если валидационная папка пуста, но это менее идеально.
+        validation_hh_parser.parsed_hands = train_hh_parser.parsed_hands[:1000] # Например, взять часть из train для валидации, если нет отдельного набора
 
     previous_stage_model_path = None
 
@@ -69,18 +80,28 @@ if __name__ == "__main__":
         print(f"Run Name: {run_name}")
 
         # 2. Генерируем начальные состояния для текущего этапа
-        initial_states_for_this_stage = None
+        initial_states_for_training = None
+        initial_states_for_validation = None
         # Стадия 1 (полная игра) не требует начальных состояний из HH
         if game_round > 1:
-            print(f"Generating initial states for game round {game_round}...")
-            initial_states_for_this_stage = hh_parser.get_states_for_round(game_round)
-            if not initial_states_for_this_stage:
-                print(f"Warning: No initial states found for game round {game_round}. Skipping stage.")
-                continue
-            print(f"Generated {len(initial_states_for_this_stage)} states.")
-        else: # Для game_round = 1
-            print("This is the full game stage, no initial states from HH will be used for reset.")
+            print(f"Generating states for game round {game_round}...")
+            initial_states_for_training = train_hh_parser.get_states_for_round(game_round)
+            initial_states_for_validation = validation_hh_parser.get_states_for_round(game_round)
 
+            if not initial_states_for_training:
+                print(f"Warning: No TRAINING states found for game round {game_round}. Skipping stage.")
+                continue
+            if not initial_states_for_validation:
+                print(
+                    f"Warning: No VALIDATION states found for game round {game_round}. Using training states for validation.")
+                initial_states_for_validation = initial_states_for_training  # Запасной вариант
+
+            print(
+                f"Generated {len(initial_states_for_training)} training states and {len(initial_states_for_validation)} validation states.")
+        else:
+            print("This is the full game stage, training will use standard reset.")
+            # Для финальной стадии оценка тоже будет на полной игре
+            initial_states_for_validation = None  # Указываем, что оценка на полной игре
 
         # 3. Обновляем конфигурацию обучения для текущего этапа
         current_stage_training_config = COMMON_TRAINING_CONFIG.copy()
@@ -92,26 +113,32 @@ if __name__ == "__main__":
         else:
             current_stage_training_config["load_model_path"] = None
             print("Starting training new model for the first stage.")
-
         # --- ДОБАВЛЯЕМ СПИСОК СОСТОЯНИЙ В КОНФИГУРАЦИЮ ---
-        current_stage_training_config["initial_states_for_curriculum"] = initial_states_for_this_stage
+        current_stage_training_config["initial_states_for_curriculum"] = initial_states_for_training
 
         # --- ЗАПУСКАЕМ ОБУЧЕНИЕ для текущего этапа ---
         train_ofc_agent(**current_stage_training_config)
 
         # Сохраняем путь к модели, обученной на этом этапе, для следующего
-        previous_stage_model_path = os.path.join(
+        # Сохраняем путь к модели
+        current_model_path = os.path.join(
             current_stage_training_config["log_dir_base"],
             current_stage_training_config["run_name"],
-            "ppo_ofc_model_final" # Имя, которое сохраняет train_ofc_agent
+            "ppo_ofc_model_final"
         )
-        print(f"Model for next stage is now at: {previous_stage_model_path}")
+        previous_stage_model_path = current_model_path
+
+        # --- ОЦЕНКА НА ЗАДАЧЕ ТЕКУЩЕЙ СТАДИИ (используя ФИКСИРОВАННЫЙ валидационный набор) ---
+        print(
+            f"\n--- Evaluating Stage {stage_idx + 1} Model on STAGE-SPECIFIC validation task (Round {game_round}) ---")
+        if os.path.exists(current_model_path + ".zip"):
+            evaluate_ofc_agent(
+                model_path=current_model_path,
+                n_episodes=50,
+                use_masking_in_predict=True,
+                initial_states_for_eval=initial_states_for_validation
+            )
+        else:
+            print(f"Model not found at {current_model_path}, cannot evaluate on stage task.")
 
     print("\n--- Curriculum Learning Finished ---")
-
-    # Оценка финальной модели, обученной на полной игре
-    if previous_stage_model_path and os.path.exists(previous_stage_model_path + ".zip"):
-        print("\nEvaluating final model from curriculum...")
-        evaluate_ofc_agent(previous_stage_model_path, n_episodes=100, use_masking_in_predict=True)
-    else:
-        print("No final model from curriculum to evaluate.")

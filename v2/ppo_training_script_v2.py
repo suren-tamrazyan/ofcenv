@@ -249,6 +249,13 @@ def train_ofc_agent(
             end=learning_rate_end,
             end_fraction=learning_rate_end_fraction
         )
+    # Clip range schedule (для текущей стадии, обычно константа)
+    clip_range_val = 0.2
+    effective_clip_range: Union[float, Callable[[float], float]]
+    if isinstance(clip_range_val, float):
+        effective_clip_range = get_linear_fn(clip_range_val, clip_range_val, 1.0)
+    else: # Если clip_range_val уже функция
+        effective_clip_range = clip_range_val
 
     ppo_params_dict = dict(
         policy="MultiInputPolicy",
@@ -262,7 +269,7 @@ def train_ofc_agent(
         n_epochs=n_epochs_val,
         gamma=0.99,
         gae_lambda=0.95,
-        clip_range=0.2,
+        clip_range=clip_range_val,
         ent_coef=ent_coef_val,
         vf_coef=vf_coef_val,
         max_grad_norm=0.5,
@@ -271,31 +278,41 @@ def train_ofc_agent(
 
     if load_model_path and os.path.exists(load_model_path + ".zip"):
         print(f"Loading model from {load_model_path}...")
+        # Определяем custom_objects для переопределения schedule-функций
+        custom_objects = {
+            "learning_rate": effective_learning_rate,
+            "lr_schedule": effective_learning_rate,
+            "clip_range": effective_clip_range,
+        }
+
         model = MaskablePPO.load(
             load_model_path,
-            env=vec_env, # Передаем новую среду (это важно для SB3)
-            custom_objects={"learning_rate": 0.0, "lr_schedule": lambda _:0.0, "clip_range": lambda _:0.0}, # Заглушки для lr и clip_range, если они были schedule
-            # НЕ ПЕРЕДАЕМ policy_kwargs здесь, если не хотим их менять
-            # SB3 попытается восстановить policy_kwargs из сохраненного файла
+            env=vec_env,
+            custom_objects=custom_objects,
+            # Не передаем другие параметры здесь, чтобы не было конфликтов
         )
-        print("Model loaded. Setting new training parameters if needed.")
+        print("Model loaded. Overriding other training parameters for continuation...")
 
-        # Явно устанавливаем параметры обучения, которые мы МОЖЕМ и ХОТИМ изменить для продолжения
-        # SB3 load() может восстановить optimizer state, но мы можем захотеть новый schedule.
-        model.learning_rate = effective_learning_rate # effective_learning_rate должно быть определено ранее
+        # Явно устанавливаем/переопределяем ВСЕ параметры обучения,
+        # чтобы быть уверенными, что используются параметры текущей стадии.
+        model.learning_rate = effective_learning_rate
+        model.clip_range = effective_clip_range
         model.ent_coef = ent_coef_val
         model.vf_coef = vf_coef_val
-        # model.clip_range = ... # Тоже нужно установить, если clip_range - schedule
-        if isinstance(ppo_params_dict["clip_range"], Callable): # ppo_params_dict определен ранее
-            model.clip_range = ppo_params_dict["clip_range"]
-        else:
-            # Для константы или если хотим новый schedule для константы
-            model.clip_range = get_linear_fn(ppo_params_dict["clip_range"], ppo_params_dict["clip_range"], 1.0)
+        model.n_steps = n_steps_val
+        model.n_epochs = n_epochs_val
+        model.batch_size = batch_size_val
+        model.gamma = ppo_params_dict["gamma"] # Берем из свежесформированного словаря
+        model.gae_lambda = ppo_params_dict["gae_lambda"]
+        model.max_grad_norm = ppo_params_dict["max_grad_norm"]
 
-
+        # Важно: нужно также обновить Rollout Buffer, если n_steps изменился
+        # SB3 load() делает это автоматически, если передать новый env,
+        # но проверим на всякий случай.
+        if model.rollout_buffer.buffer_size != model.n_steps:
+             print("Resetting rollout buffer due to n_steps change.")
+             model.rollout_buffer.reset()
         print("Model loaded. Continuing training.")
-        # Устанавливаем num_timesteps для learn, чтобы он знал, сколько еще учиться
-        # SB3 автоматически продолжит с total_timesteps загруженной модели, если reset_num_timesteps=False
     else:
         if load_model_path:
             print(f"Warning: Specified load_model_path '{load_model_path}' not found. Training new model.")
@@ -346,7 +363,7 @@ def train_ofc_agent(
             callback=[InfoCallback(verbose=0), eval_callback],
             tb_log_name=run_name, # Используем имя запуска для логов
             progress_bar=True,
-            reset_num_timesteps=(load_model_path is None) # Сбрасывать, только если новая модель
+            reset_num_timesteps=True#(load_model_path is None) # Сбрасывать, только если новая модель
         )
         model.save(model_save_path + "_final")
         print("Training finished. Final model saved.")
@@ -366,8 +383,125 @@ def train_ofc_agent(
         eval_vec_env.close()
 
 # --- Функция для оценки модели ---
-
 def evaluate_ofc_agent(
+    model_path: str,
+    n_episodes: int = 50,
+    deterministic: bool = True,
+    use_masking_in_predict: bool = True,
+    # --- НОВЫЕ ПАРАМЕТРЫ ---
+    eval_vec_env_type: str = "dummy", # Тип VecEnv для оценки
+    eval_n_envs: int = 1, # Количество окружений
+    initial_states_for_eval: Optional[List[Dict]] = None # Список состояний для curriculum-оценки
+    ):
+    print(f"\n--- Evaluating Model: {model_path} ---")
+    if initial_states_for_eval:
+        print(f"Evaluation will start from {len(initial_states_for_eval)} provided initial states (Curriculum Mode).")
+    else:
+        print("Evaluation will start from the beginning of the game (Standard Mode).")
+
+    if not os.path.exists(model_path + ".zip"):
+        print(f"Model not found at {model_path}")
+        return
+
+    # --- Настройка среды для оценки с учетом curriculum ---
+    # Определяем стандартную функцию создания среды
+    def make_standard_eval_env(rank: int, seed: int = 0):
+        def _init():
+            env = gym.make(ENV_ID)
+            env = Monitor(env)
+            env = ActionMasker(env, mask_fn)
+            return env
+        return _init
+
+    # Выбираем, какую функцию-конструктор использовать
+    if initial_states_for_eval:
+        # Используем curriculum_make_env_fn, которая переопределяет reset
+        # curriculum_make_env_fn должна быть определена в глобальной области видимости этого файла
+        eval_env_fns = [curriculum_make_env_fn(i, 1000 + i, initial_states_for_eval) for i in range(eval_n_envs)]
+    else:
+        # Используем стандартную функцию
+        eval_env_fns = [make_standard_eval_env(i, 1000 + i) for i in range(eval_n_envs)]
+
+    # Создаем VecEnv
+    if eval_vec_env_type.lower() == "subproc" and eval_n_envs > 1:
+        eval_vec_env_final = SubprocVecEnv(eval_env_fns)
+    else:
+        eval_vec_env_final = DummyVecEnv(eval_env_fns)
+    # --- КОНЕЦ НАСТРОЙКИ СРЕДЫ ДЛЯ ОЦЕНКИ ---
+
+
+    # --- Загрузка модели и цикл оценки ---
+    try:
+        model_to_evaluate = MaskablePPO.load(model_path, env=eval_vec_env_final)
+        print(f"Loaded model from {model_path}")
+        # ... (опциональная проверка экстрактора) ...
+        loaded_extractor = model_to_evaluate.policy.features_extractor
+        if hasattr(loaded_extractor, 'ofc_feature_extractor') and \
+                loaded_extractor.__class__.__name__ == SB3OFCFeaturesExtractor.__name__:
+            print("Correct custom feature extractor type was loaded based on name and attribute.")
+        else:
+            print("Warning: Loaded model might not have the expected custom feature extractor.")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        import traceback
+        traceback.print_exc()
+        eval_vec_env_final.close()
+        return
+
+    total_reward = 0
+    total_length = 0
+    rewards_list = []
+    episodes_completed_count = 0
+
+    obs = eval_vec_env_final.reset()
+
+    while episodes_completed_count < n_episodes:
+        action_masks_for_predict_list = None
+        if use_masking_in_predict:
+            action_masks_for_predict_list = eval_vec_env_final.env_method("get_action_mask")
+
+        final_mask_for_predict = None
+        if action_masks_for_predict_list is not None:
+            if eval_n_envs > 1:
+                final_mask_for_predict = np.stack(action_masks_for_predict_list)
+            elif eval_n_envs == 1:
+                final_mask_for_predict = action_masks_for_predict_list[0]
+
+        action, _states = model_to_evaluate.predict(
+            obs,
+            deterministic=deterministic,
+            action_masks=final_mask_for_predict if use_masking_in_predict else None
+        )
+        obs, reward, done, info = eval_vec_env_final.step(action)
+
+        for i in range(eval_n_envs):
+            if done[i]:
+                episodes_completed_count += 1
+                monitor_ep_info = info[i].get('episode')
+                if monitor_ep_info:
+                    actual_ep_reward = monitor_ep_info['r']
+                    actual_ep_length = monitor_ep_info['l']
+                    # print(f"Eval Episode {episodes_completed_count}/{n_episodes} (Env {i}) finished. Reward: {actual_ep_reward:.2f}, Length: {actual_ep_length}")
+                    rewards_list.append(actual_ep_reward)
+                    total_reward += actual_ep_reward
+                    total_length += actual_ep_length
+                # Если эпизод завершился, он будет автоматически сброшен VecEnv
+                # и начнет новый эпизод (либо стандартный, либо curriculum, в зависимости от env_fns)
+
+                if episodes_completed_count >= n_episodes:
+                    break
+        if episodes_completed_count >= n_episodes:
+            break
+
+    avg_reward = total_reward / episodes_completed_count if episodes_completed_count > 0 else 0
+    avg_length = total_length / episodes_completed_count if episodes_completed_count > 0 else 0
+    print(f"\nAverage reward over {episodes_completed_count} eval episodes: {avg_reward:.2f}")
+    print(f"Average length over {episodes_completed_count} eval episodes: {avg_length:.2f}")
+    if rewards_list:
+        print(f"Reward std: {np.std(rewards_list):.2f}, Min: {np.min(rewards_list):.2f}, Max: {np.max(rewards_list):.2f}")
+
+    eval_vec_env_final.close()
+"""def evaluate_ofc_agent(
     model_path: str,
     n_episodes: int = 50,
     deterministic: bool = True,
@@ -479,7 +613,7 @@ def evaluate_ofc_agent(
         print(f"Reward std: {np.std(rewards_list):.2f}, Min: {np.min(rewards_list):.2f}, Max: {np.max(rewards_list):.2f}")
 
     eval_vec_env.close()
-
+"""
 
 # --- Пример использования (можно закомментировать при импорте) ---
 if __name__ == "__main__":
