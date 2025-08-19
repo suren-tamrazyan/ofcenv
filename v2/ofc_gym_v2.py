@@ -360,7 +360,7 @@ class OfcEnvV2(gym.Env):
                      # Если игра не окончена глобально, это ошибка
                      if not self.game.is_game_over():
                          print(f"Error: Hero's turn but no cards to play after opponent turns!")
-                         terminated = True; reward = -30; info['error'] = "No cards after opponent turn"
+                         terminated = True; reward = 0.0; info['error'] = "No cards after opponent turn"
                          # Возвращаем obs на момент ошибки
                          return self._get_obs(), reward, terminated, truncated, info
                 else: # 1, 2, 4 карты - не должно быть в начале хода

@@ -34,30 +34,56 @@ class HHParser:
         return "classic" in rule_str_lower or "nojokers" in rule_str_lower
 
     def parse_files(self):
-        """Читает все .txt файлы из директории и парсит их."""
-        for filename in os.listdir(self.hh_files_directory):
-            if filename.endswith(".hh") or filename.endswith(".txt"):  # или другое расширение, если необходимо
-                filepath = os.path.join(self.hh_files_directory, filename)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        # Разделяем контент на отдельные JSON-объекты
-                        # Каждый JSON-объект отделен двумя переносами строк
-                        json_blocks = content.strip().split('\n\n\n')
+        """Читает все .txt файлы из указанной директории и всех ее поддиректорий (рекурсивно)."""
+        print(f"Recursively parsing HH files from: {self.hh_files_directory}")
+        # Используем os.walk для рекурсивного обхода
+        for root, dirs, files in os.walk(self.hh_files_directory):
+            for filename in files:
+                if filename.endswith(".hh") or filename.endswith(".txt"):
+                    filepath = os.path.join(root, filename)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
 
-                        for block in json_blocks:
-                            block = block.strip()
-                            if not block:
+                            # Очистка от символа SUB и других нежелательных символов ---
+                            # Символ SUB имеет код 26, или \x1a
+                            content = content.replace('\x1a', '')
+                            # Можно также удалить нулевые символы, которые тоже иногда вызывают проблемы
+                            content = content.replace('\x00', '')
+                            # --- КОНЕЦ ОЧИСТКИ ---
+                            # Если после очистки контент пуст, пропускаем
+                            if not content.strip():
                                 continue
-                            try:
-                                hand_json = json.loads(block)
-                                self._process_hand_json(hand_json)
-                            except json.JSONDecodeError as json_err:
-                                print(f"Warning: Could not decode JSON block in {filename}: {str(json_err)}")
-                                print(f"Block starts with: {block[:100]}...")
-                except Exception as e:
-                    print(f"Error reading file {filename}: {e}")
-        print(f"Parsed {len(self.parsed_hands)} valid hands for curriculum learning.")
+
+                            # Если JSON-объекты склеены (например, "}{"), вставляем между ними
+                            # уникальный разделитель, по которому потом можно будет разделить строку.
+                            # Используем очень маловероятную последовательность символов.
+                            UNIQUE_SEPARATOR = "|||JSON_SEPARATOR|||"
+
+                            # Заменяем "}{" на "}|||JSON_SEPARATOR|||{"
+                            # Также обрабатываем случаи с пробелами/переносами строк: "} \n\n {"
+                            import re
+                            # Используем регулярное выражение для поиска '}' за которым могут следовать пробельные символы и потом '{'
+                            # re.DOTALL позволяет '.' совпадать с переносом строки
+                            content_with_separators = re.sub(r'}\s*{', f'}}{UNIQUE_SEPARATOR}{{', content,
+                                                             flags=re.DOTALL)
+
+                            json_blocks = content_with_separators.split(UNIQUE_SEPARATOR)
+                            # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
+                            for block in json_blocks:
+                                block = block.strip()
+                                if not block:
+                                    continue
+                                try:
+                                    hand_json = json.loads(block)
+                                    self._process_hand_json(hand_json)
+                                except json.JSONDecodeError as json_err:
+                                    print(f"Warning: Could not decode JSON block in {filename}: {str(json_err)}")
+                                    print(f"Block starts with: {block[:100]}...")
+                    except Exception as e:
+                        print(f"Error reading file {filename}: {e}")
+        print(f"Finished parsing. Total {len(self.parsed_hands)} valid hands found.")
 
     def _process_hand_json(self, hand_json: Dict[str, Any]):
         """Обрабатывает один JSON объект раздачи."""
@@ -302,18 +328,7 @@ class HHParser:
 
 # Пример использования (нужно будет вызывать из основного скрипта)
 if __name__ == "__main__":
-    parser = HHParser(hh_files_directory="D:\\develop\\temp\\poker\\Eureka\\tmp")
+    # path = "D:\\develop\\temp\\poker\\Eureka\\tmp\\bad"
+    path = "D:\\develop\\poker\\misc\\hh_ofc\\hh_ofc"
+    parser = HHParser(hh_files_directory=path)
     parser.parse_files()
-    # Получить состояния для начала 2-го игрового раунда (когда герой получает 3 карты)
-    # Это соответствует target_placement_round = 1 в терминах HH (0,1,2,3,4)
-    round_2_states = parser.get_states_for_round(target_placement_round=1)
-    print(f"Generated {len(round_2_states)} states for round 2 (placement round 1 in HH terms).")
-    if round_2_states:
-        print("Example state:", round_2_states[0])
-
-    # Получить состояния для 5-го игрового раунда (последнее размещение 2 карт)
-    # Это target_placement_round = 4
-    last_round_states = parser.get_states_for_round(target_placement_round=4)
-    print(f"Generated {len(last_round_states)} states for final placement round (placement round 4 in HH terms).")
-    if last_round_states:
-        print("Example state (final round):", last_round_states[0])
