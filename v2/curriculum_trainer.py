@@ -10,16 +10,16 @@ from hh_parser import HHParser
 # Убираем лишние импорты, так как они теперь внутри ppo_training_script_v2
 
 # --- Настройки Curriculum ---
-HH_FILES_DIR_TRAIN = "D:\\develop\\temp\\poker\\Eureka\\hh\\train\\" # <<--- ПУТЬ К ОБУЧАЮЩИМ HH
-HH_FILES_DIR_VALIDATION = "D:\\develop\\temp\\poker\\Eureka\\hh\\validation\\" # <<--- ПУТЬ К ВАЛИДАЦИОННЫМ HH
+HH_FILES_DIR_TRAIN = "/home/jupyter/datasets/train" # <<--- ПУТЬ К ОБУЧАЮЩИМ HH
+HH_FILES_DIR_VALIDATION = "/home/jupyter/datasets/validation" # <<--- ПУТЬ К ВАЛИДАЦИОННЫМ HH
 LOG_DIR_BASE_CURRICULUM = "./ofc_curriculum_runs/"
-N_ENVS_CURRICULUM = 4 # Количество параллельных сред для обучения на каждом этапе
+N_ENVS_CURRICULUM = 8 # Количество параллельных сред для обучения на каждом этапе
 
 # Игровые раунды (1-5)
 # Напоминание: HHParser.get_states_for_round ожидает игровой раунд (1, 2, 3, 4, 5)
 CURRICULUM_STAGES = [
-    {"placement_round_hh": 5, "total_timesteps": 50_000, "run_name_suffix": "_stage_r5"}, # Последний раунд
-    {"placement_round_hh": 4, "total_timesteps": 100_000, "run_name_suffix": "_stage_r4"},
+    {"placement_round_hh": 5, "total_timesteps": 1_000_000, "run_name_suffix": "_stage_r5"}, # Последний раунд
+    # {"placement_round_hh": 4, "total_timesteps": 100_000, "run_name_suffix": "_stage_r4"},
     #{"placement_round_hh": 3, "total_timesteps": 1_000_000, "run_name_suffix": "_stage_r3"},
     #{"placement_round_hh": 2, "total_timesteps": 1_500_000, "run_name_suffix": "_stage_r2"},
     # {"placement_round_hh": 1, "total_timesteps": 2_000_000, "run_name_suffix": "_stage_r1"}, # Полная игра (без curriculum)
