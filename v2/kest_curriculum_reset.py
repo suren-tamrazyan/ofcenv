@@ -16,7 +16,7 @@ MAX_STEPS_PER_EPISODE = 50 # Ограничение на случай зацик
 
 # Раунды размещения в терминах HH-парсера (0-4)
 # Мы будем тестировать, начиная с более поздних раундов
-TEST_PLACEMENT_ROUNDS_HH = [1]#[5, 4, 2, 1] # Например, последний, предпредпоследний, второй, первый
+TEST_PLACEMENT_ROUNDS_HH = [5]#[5, 4, 2, 1] # Например, последний, предпредпоследний, второй, первый
 
 # --- Регистрация среды (если еще не сделано) ---
 try:
@@ -45,7 +45,7 @@ def run_episode_from_state(env: OfcEnvV2, initial_state: Dict[str, Any], episode
             pass;
 
         obs, info = env.reset_to_state(initial_state_snapshot=initial_state, seed=episode_num)
-        # print("Initial Observation:", obs) # Для отладки
+        print("Initial Observation:\n", env.game) # Для отладки
         # print("Initial Info:", info)
     except Exception as e:
         print(f"ERROR during env.reset_to_state: {e}")
@@ -151,7 +151,7 @@ if __name__ == "__main__":
         successful_episodes_this_stage = 0
         for i in range(min(NUM_EPISODES_PER_STAGE, len(initial_states))): # Берем не больше, чем есть состояний
             initial_state = initial_states[i] # Берем по порядку или np.random.choice(initial_states)
-            if run_episode_from_state(test_env, initial_state, episode_num=i+1, placement_round=placement_round_hh):
+            if run_episode_from_state(test_env.unwrapped, initial_state, episode_num=i+1, placement_round=placement_round_hh):
                 successful_episodes_this_stage += 1
             else:
                 all_stages_successful = False # Отмечаем, что хотя бы один эпизод провалился

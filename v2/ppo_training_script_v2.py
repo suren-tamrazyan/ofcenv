@@ -17,6 +17,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 # Импортируем новую среду и компоненты архитектуры
 from ofc_gym_v2 import OfcEnvV2
 from ofc_neural_network_architecture import OFCFeatureExtractor, ACTION_SPACE_DIM  # Для get_last_mask
+# from v2.hh_parser import HHParser
 
 # --- Регистрация среды (если еще не сделано) ---
 ENV_ID = 'ofc-v2'
@@ -384,6 +385,128 @@ def train_ofc_agent(
 
 # --- Функция для оценки модели ---
 def evaluate_ofc_agent(
+        model_path: str,
+        n_episodes: int = 50,
+        deterministic: bool = True,
+        use_masking_in_predict: bool = True,
+        eval_vec_env_type: str = "dummy",  # Оставим возможность для subproc
+        eval_n_envs: int = 1,  # Количество окружений
+        initial_states_for_eval: Optional[List[Dict]] = None  # Список состояний для curriculum-оценки
+):
+    print(f"\n--- Evaluating Model: {model_path} ---")
+    if initial_states_for_eval:
+        print(f"Evaluation will start from {len(initial_states_for_eval)} provided initial states (Curriculum Mode).")
+    else:
+        print("Evaluation will start from the beginning of the game (Standard Mode).")
+
+    if not os.path.exists(model_path + ".zip"):
+        print(f"Model not found at {model_path}")
+        return
+
+    # --- Создаем специальную функцию make_env для ДЕТЕРМИНИРОВАННОЙ оценки ---
+    # Она будет отслеживать, какой эпизод сейчас идет
+    _episode_counter = 0
+
+    def make_deterministic_eval_env(rank: int, seed: int = 0):
+        def _init():
+            env = gym.make(ENV_ID)
+            env = Monitor(env)
+
+            # Переопределяем reset для детерминированного выбора
+            original_reset = env.unwrapped.reset
+            original_reset_to_state = env.unwrapped.reset_to_state
+
+            def deterministic_reset(*args, **kwargs):
+                nonlocal _episode_counter
+                # Используем счетчик для выбора состояния и сида
+                current_episode_index = _episode_counter
+                _episode_counter += 1
+
+                if initial_states_for_eval:
+                    state_index = current_episode_index % len(initial_states_for_eval)
+                    chosen_state = initial_states_for_eval[state_index]
+                    # Вызываем reset_to_state с детерминированным сидом
+                    return original_reset_to_state(initial_state_snapshot=chosen_state, seed=state_index)
+                else:
+                    # Стандартный reset, но с детерминированным сидом
+                    return original_reset(seed=current_episode_index)
+
+            # Заменяем метод reset у базовой среды
+            env.unwrapped.reset = deterministic_reset
+
+            # ActionMasker применяем после
+            env = ActionMasker(env, mask_fn)
+            return env
+
+        return _init
+
+    # --- Создаем VecEnv для оценки ---
+    eval_env_fns = [make_deterministic_eval_env(i, 42) for i in range(eval_n_envs)]
+    if eval_vec_env_type.lower() == "subproc" and eval_n_envs > 1:
+        eval_vec_env = SubprocVecEnv(eval_env_fns)
+    else:
+        eval_vec_env = DummyVecEnv(eval_env_fns)
+
+    # --- Загрузка модели и цикл оценки ---
+    try:
+        custom_objects = {"learning_rate": 0.0, "lr_schedule": lambda _: 0.0, "clip_range": lambda _: 0.0}
+        model_to_evaluate = MaskablePPO.load(model_path, env=eval_vec_env, custom_objects=custom_objects)
+        print(f"Loaded model from {model_path}")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        eval_vec_env.close()
+        return
+
+    rewards_list = []
+    lengths_list = []
+
+    # Сбрасываем счетчик перед началом
+    _episode_counter = 0
+    obs = eval_vec_env.reset()  # Первый, детерминированный reset
+
+    # Цикл, пока не соберем n_episodes результатов
+    while len(rewards_list) < n_episodes:
+        action_masks = eval_vec_env.env_method("get_action_mask")
+        if eval_n_envs == 1:
+            action_masks = action_masks[0]
+        else:
+            action_masks = np.stack(action_masks)
+
+        action, _states = model_to_evaluate.predict(
+            obs,
+            deterministic=deterministic,
+            action_masks=action_masks if use_masking_in_predict else None
+        )
+        obs, reward, done, info = eval_vec_env.step(action)
+
+        for i in range(eval_n_envs):
+            if done[i]:
+                monitor_ep_info = info[i].get('episode')
+                if monitor_ep_info:
+                    rewards_list.append(monitor_ep_info['r'])
+                    lengths_list.append(monitor_ep_info['l'])
+                    print(
+                        f"Eval Episode {len(rewards_list)}/{n_episodes} (Env {i}) finished. Reward: {monitor_ep_info['r']:.2f}, Length: {monitor_ep_info['l']}")
+
+                if len(rewards_list) >= n_episodes:
+                    break
+        if len(rewards_list) >= n_episodes:
+            break
+
+    # --- Вывод статистики ---
+    if rewards_list:
+        avg_reward = np.mean(rewards_list)
+        avg_length = np.mean(lengths_list)
+        print(f"\nAverage reward over {len(rewards_list)} eval episodes: {avg_reward:.2f}")
+        print(f"Average length over {len(rewards_list)} eval episodes: {avg_length:.2f}")
+        print(
+            f"Reward std: {np.std(rewards_list):.2f}, Min: {np.min(rewards_list):.2f}, Max: {np.max(rewards_list):.2f}")
+    else:
+        print("\nNo episodes were completed during evaluation.")
+
+    eval_vec_env.close()
+
+'''def evaluate_ofc_agent(
     model_path: str,
     n_episodes: int = 50,
     deterministic: bool = True,
@@ -501,119 +624,7 @@ def evaluate_ofc_agent(
         print(f"Reward std: {np.std(rewards_list):.2f}, Min: {np.min(rewards_list):.2f}, Max: {np.max(rewards_list):.2f}")
 
     eval_vec_env_final.close()
-"""def evaluate_ofc_agent(
-    model_path: str,
-    n_episodes: int = 50,
-    deterministic: bool = True,
-    use_masking_in_predict: bool = True # Оставляем эту опцию для явного контроля
-    ):
-    print(f"\n--- Evaluating Model: {model_path} ---")
-    if not os.path.exists(model_path + ".zip"):
-        print(f"Model not found at {model_path}")
-        return
-
-    # Создаем среду для оценки
-    eval_env_instance = gym.make(ENV_ID)
-    eval_env_instance = Monitor(eval_env_instance)
-    # ActionMasker нужен, если use_masking_in_predict=True и мы хотим, чтобы obs содержал 'action_mask'
-    # Или если сама модель ожидает obs без маски, а мы ее извлекаем из среды
-    # Для чистоты, если predict сам берет маску из obs, то ActionMasker для среды не нужен
-    # НО! Если мы хотим ПОЛУЧИТЬ маску из среды, то ActionMasker не нужен, нужен доступ к get_action_mask
-    # Оставим ActionMasker, так как он не повредит, а obs['action_mask'] может быть удобен
-    eval_env_instance = ActionMasker(eval_env_instance, mask_fn)
-    eval_vec_env = DummyVecEnv([lambda: eval_env_instance])
-
-    # Загружаем модель
-    # НЕ передаем policy_kwargs, SB3 должен сам восстановить экстрактор
-    try:
-        model_to_evaluate = MaskablePPO.load(model_path, env=eval_vec_env)
-        print(f"Loaded model from {model_path}")
-        # Проверим, что экстрактор правильный (опционально, для отладки)
-        loaded_extractor = model_to_evaluate.policy.features_extractor
-        if hasattr(loaded_extractor, 'ofc_feature_extractor') and \
-                loaded_extractor.__class__.__name__ == SB3OFCFeaturesExtractor.__name__:  # Сравниваем имена классов
-            print("Correct custom feature extractor type was loaded based on name and attribute.")
-        elif loaded_extractor is not None:
-            print(
-                f"Warning: Loaded model has a feature extractor of type '{type(loaded_extractor).__name__}', expected 'SB3OFCFeaturesExtractor'. Structure might still be correct.")
-            # Можно добавить вывод структуры для визуальной проверки, если нужно
-            print("Loaded extractor structure:", loaded_extractor)
-        else:
-            print("Error: Feature extractor not found in loaded model.")
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        import traceback
-        traceback.print_exc()
-        eval_vec_env.close()
-        return
-
-
-    total_reward = 0
-    total_length = 0
-    rewards_list = []
-
-    # Сбрасываем среду перед циклом оценки
-    obs = eval_vec_env.reset() # obs теперь будет словарём тензоров, если VecEnv обернут в SB3
-
-    for episode in range(n_episodes):
-        terminated = False
-        truncated = False # В Gymnasium done разделен на terminated и truncated
-        episode_reward = 0
-        episode_length = 0
-        while not terminated and not truncated:
-            action_masks_for_predict = None
-            if use_masking_in_predict:
-                # obs[0] так как reset() для VecEnv возвращает список/кортеж наблюдений
-                # и мы берем наблюдение для первой (и единственной) среды
-                # Если obs уже словарь (например, после первого step), то просто obs['action_mask']
-                current_obs_dict = obs[0] if isinstance(obs, (list, tuple)) else obs
-
-                if 'action_mask' not in current_obs_dict:
-                    # Если маски нет в наблюдении, получаем ее из среды
-                    action_masks_for_predict = eval_vec_env.env_method("get_action_mask")[0]
-                else:
-                    action_masks_for_predict = current_obs_dict['action_mask']
-
-            action, _states = model_to_evaluate.predict(
-                obs, # Передаем все наблюдения (SB3 сам разберется с батчем)
-                deterministic=deterministic,
-                action_masks=action_masks_for_predict if use_masking_in_predict else None
-            )
-            obs, reward, done, info = eval_vec_env.step(action) # done - это массив булевых
-            episode_reward += reward[0]
-            episode_length += 1
-
-            terminated = done[0] # Используем done[0] для VecEnv
-            # truncated для VecEnv обычно тоже в done[0] или в info[0].get("TimeLimit.truncated", False)
-            truncated = info[0].get("TimeLimit.truncated", False)
-
-
-            if terminated or truncated:
-                monitor_ep_info = info[0].get('episode')
-                if monitor_ep_info:
-                    actual_ep_reward = monitor_ep_info['r']
-                    actual_ep_length = monitor_ep_info['l']
-                    print(f"Eval Episode {episode + 1}/{n_episodes} finished. Reward: {actual_ep_reward:.2f}, Length: {actual_ep_length}")
-                    rewards_list.append(actual_ep_reward)
-                    total_reward += actual_ep_reward
-                    total_length += actual_ep_length
-                else:
-                    print(f"Eval Episode {episode + 1}/{n_episodes} finished (no Monitor info). Step Reward: {reward[0]:.2f}, Manual Ep Reward: {episode_reward:.2f}, Length: {episode_length}")
-                    rewards_list.append(episode_reward)
-                    total_reward += episode_reward
-                    total_length += episode_length
-                # obs = eval_vec_env.reset() # Сброс происходит автоматически в VecEnv, если эпизод завершен
-                break # Выход из while для текущего эпизода
-
-    avg_reward = total_reward / n_episodes if n_episodes > 0 else 0
-    avg_length = total_length / n_episodes if n_episodes > 0 else 0
-    print(f"\nAverage reward over {n_episodes} eval episodes: {avg_reward:.2f}")
-    print(f"Average length over {n_episodes} eval episodes: {avg_length:.2f}")
-    if rewards_list:
-        print(f"Reward std: {np.std(rewards_list):.2f}, Min: {np.min(rewards_list):.2f}, Max: {np.max(rewards_list):.2f}")
-
-    eval_vec_env.close()
-"""
+'''
 
 # --- Пример использования (можно закомментировать при импорте) ---
 if __name__ == "__main__":
@@ -636,6 +647,13 @@ if __name__ == "__main__":
         "vec_env_type": "subproc",
         "n_envs": 4
     }
+    '''
+    validation_hh_parser = HHParser(hh_files_directory="D:\\develop\\temp\\poker\\Eureka\\hh\\validation\\")
+    validation_hh_parser.parse_files()
+    initial_states_for_validation = validation_hh_parser.get_states_for_round(5)
+    final_model_to_eval = os.path.join("./ofc_curriculum_runs/", "Curriculum_stage_r5", "ppo_ofc_model_final")
+    evaluate_ofc_agent(final_model_to_eval, n_episodes=50, use_masking_in_predict=True, initial_states_for_eval=initial_states_for_validation)
+'''
 
     # Запуск обучения
     train_ofc_agent(**config)
