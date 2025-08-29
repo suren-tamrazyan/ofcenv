@@ -167,6 +167,7 @@ def train_ofc_agent(
     # --- НОВЫЕ ПАРАМЕТРЫ для VecEnv ---
     vec_env_type: str = "dummy",  # "dummy" или "subproc"
     n_envs: int = 1,  # Количество окружений (для subproc > 1)
+    use_eval_callback: bool = True,
     # --- НОВЫЙ ПАРАМЕТР для Curriculum ---
     initial_states_for_curriculum: Optional[List[Dict]] = None
     ):
@@ -327,41 +328,44 @@ def train_ofc_agent(
     print("-------------------")
 
     # --- Коллбэк для оценки ---
-    # eval_env_instance = gym.make(ENV_ID)
-    # eval_env_instance = Monitor(eval_env_instance)
-    # eval_env_instance = ActionMasker(eval_env_instance, mask_fn)
-    # eval_vec_env = DummyVecEnv([lambda: eval_env_instance])
     print("Creating evaluation environment...")
-    # EvalCallback должен оценивать на ТОЙ ЖЕ ЗАДАЧЕ, которой агент обучается.
-    # Поэтому мы используем ту же логику создания сред, что и для vec_env.
-    if initial_states_for_curriculum:
-        # Оценка на curriculum-задаче
-        eval_env_fns = [curriculum_make_env_fn(i, seed_val + n_envs + i, initial_states_for_curriculum) for i in range(n_envs)]
-    else:
-        # Оценка на полной игре (стандартное обучение)
-        eval_env_fns = [make_env_fn_for_vec(i, seed_val + n_envs + i) for i in range(n_envs)]
+    callbacks_list = [InfoCallback(verbose=0)]
+    if use_eval_callback:
+        print("Creating evaluation environment and EvalCallback...")
+        # EvalCallback должен оценивать на ТОЙ ЖЕ ЗАДАЧЕ, которой агент обучается.
+        # Поэтому мы используем ту же логику создания сред, что и для vec_env.
+        if initial_states_for_curriculum:
+            # Оценка на curriculum-задаче
+            eval_env_fns = [curriculum_make_env_fn(i, seed_val + n_envs + i, initial_states_for_curriculum) for i in range(n_envs)]
+        else:
+            # Оценка на полной игре (стандартное обучение)
+            eval_env_fns = [make_env_fn_for_vec(i, seed_val + n_envs + i) for i in range(n_envs)]
 
-    if vec_env_type.lower() == "subproc" and n_envs > 1:
-        eval_vec_env = SubprocVecEnv(eval_env_fns)
-    else:
-        eval_vec_env = DummyVecEnv(eval_env_fns)
+        if vec_env_type.lower() == "subproc" and n_envs > 1:
+            eval_vec_env = SubprocVecEnv(eval_env_fns)
+        else:
+            eval_vec_env = DummyVecEnv(eval_env_fns)
 
-    eval_callback = MaskableEvalCallback( # Используем MaskableEvalCallback
-        eval_vec_env,
-        best_model_save_path=eval_log_path, # Сохраняет как best_model.zip
-        log_path=eval_log_path,
-        eval_freq=max(eval_freq_factor // n_envs, 1), # Делим на n_envs
-        n_eval_episodes=n_eval_episodes,
-        deterministic=True, # Оцениваем детерминированно
-        # render=False, # render убран, т.к. MaskableEvalCallback его не поддерживает напрямую
-        use_masking=True # ВАЖНО: Указываем использовать маску при оценке
-    )
+        eval_callback = MaskableEvalCallback( # Используем MaskableEvalCallback
+            eval_vec_env,
+            best_model_save_path=eval_log_path, # Сохраняет как best_model.zip
+            log_path=eval_log_path,
+            eval_freq=max(eval_freq_factor // n_envs, 1), # Делим на n_envs
+            n_eval_episodes=n_eval_episodes,
+            deterministic=True, # Оцениваем детерминированно
+            # render=False, # render убран, т.к. MaskableEvalCallback его не поддерживает напрямую
+            use_masking=True # ВАЖНО: Указываем использовать маску при оценке
+        )
+        callbacks_list.append(eval_callback)
+    else:
+        print("Evaluation callback is disabled.")
+        eval_vec_env = None # Убедимся, что переменная не используется дальше
 
     print(f"Starting/Continuing training for {total_timesteps} total timesteps...")
     try:
         model.learn(
             total_timesteps=total_timesteps, # Общее количество шагов с начала
-            callback=[InfoCallback(verbose=0), eval_callback],
+            callback=callbacks_list,
             tb_log_name=run_name, # Используем имя запуска для логов
             progress_bar=True,
             reset_num_timesteps=True#(load_model_path is None) # Сбрасывать, только если новая модель
@@ -381,7 +385,9 @@ def train_ofc_agent(
         print("Model saved after error.")
     finally:
         vec_env.close()
-        eval_vec_env.close()
+        # Закрываем eval_vec_env, только если он был создан
+        if eval_vec_env is not None:
+            eval_vec_env.close()
 
 # --- Функция для оценки модели ---
 def evaluate_ofc_agent(

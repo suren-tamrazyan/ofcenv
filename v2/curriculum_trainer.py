@@ -13,7 +13,7 @@ from hh_parser import HHParser
 HH_FILES_DIR_TRAIN = "/home/jupyter/datasets/train" # <<--- ПУТЬ К ОБУЧАЮЩИМ HH
 HH_FILES_DIR_VALIDATION = "/home/jupyter/datasets/validation" # <<--- ПУТЬ К ВАЛИДАЦИОННЫМ HH
 LOG_DIR_BASE_CURRICULUM = "./ofc_curriculum_runs/"
-N_ENVS_CURRICULUM = 8 # Количество параллельных сред для обучения на каждом этапе
+N_ENVS_CURRICULUM = 5 # Количество параллельных сред для обучения на каждом этапе
 
 # Игровые раунды (1-5)
 # Напоминание: HHParser.get_states_for_round ожидает игровой раунд (1, 2, 3, 4, 5)
@@ -27,6 +27,7 @@ CURRICULUM_STAGES = [
 
 # Общие параметры для train_ofc_agent
 COMMON_TRAINING_CONFIG = {
+    "use_eval_callback": False,
     "log_dir_base": LOG_DIR_BASE_CURRICULUM,
     "learning_rate_start": 1e-4,
     "learning_rate_end": 5e-6,
@@ -134,7 +135,7 @@ if __name__ == "__main__":
         if os.path.exists(current_model_path + ".zip"):
             evaluate_ofc_agent(
                 model_path=current_model_path,
-                n_episodes=50,
+                n_episodes=len(initial_states_for_validation),
                 use_masking_in_predict=True,
                 initial_states_for_eval=initial_states_for_validation
             )
