@@ -103,6 +103,7 @@ def run_episode_from_state(env: OfcEnvV2, initial_state: Dict[str, Any], episode
         print(env.unwrapped.game)
         return False
 
+    print("End game:\n", env.game)  # Для отладки
     return True
 
 

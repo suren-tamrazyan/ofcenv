@@ -335,7 +335,7 @@ class OfcEnvV2(gym.Env):
                     num_rounds = 1 + (13 - 5) // 2 # 1 + 8 // 2 = 5 раундов для HU
                     if self.game.round < num_rounds: # Уточнить для 3-max
                          self.game._next_round() # Включает раздачу карт в OfcGame
-                         print(f"DEBUG: Advanced to round {self.game.round}")
+                         # print(f"DEBUG: Advanced to round {self.game.round}")
                 else:
                      print("Warning: OfcGame missing _next_round.")
 
@@ -359,7 +359,7 @@ class OfcEnvV2(gym.Env):
                 elif num_to_play == 0: # Игра окончена для игрока? Или ошибка?
                      # Если игра не окончена глобально, это ошибка
                      if not self.game.is_game_over():
-                         print(f"Error: Hero's turn but no cards to play after opponent turns!")
+                         # print(f"Error: Hero's turn but no cards to play after opponent turns!")
                          terminated = True; reward = 0.0; info['error'] = "No cards after opponent turn"
                          # Возвращаем obs на момент ошибки
                          return self._get_obs(), reward, terminated, truncated, info

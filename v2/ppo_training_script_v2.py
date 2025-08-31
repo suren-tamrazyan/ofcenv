@@ -388,6 +388,7 @@ def train_ofc_agent(
         # Закрываем eval_vec_env, только если он был создан
         if eval_vec_env is not None:
             eval_vec_env.close()
+    return model
 
 # --- Функция для оценки модели ---
 def evaluate_ofc_agent(
