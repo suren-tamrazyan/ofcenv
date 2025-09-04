@@ -20,7 +20,7 @@ class OfcEnvV2(gym.Env):
     """
     metadata = {'render_modes': ['human', 'ansi'], 'render_fps': 1}
 
-    def __init__(self, max_player=2, render_mode=None):
+    def __init__(self, max_player=2, render_mode=None, use_reward_shaping_and_clipping: bool = True):
         super().__init__()
 
         self.max_player = max_player
@@ -40,6 +40,8 @@ class OfcEnvV2(gym.Env):
 
         # --- Определяем пространства ---
         self.action_space = gym.spaces.Discrete(ACTION_SPACE_DIM) # 6 действий
+
+        self.use_reward_shaping_and_clipping = use_reward_shaping_and_clipping
 
         # Определяем observation_space на основе вывода state_to_tensors
         # Используем Box для тензоров и MultiBinary для маски
@@ -379,6 +381,12 @@ class OfcEnvV2(gym.Env):
             reward = player.calc_score_single()
             # reward = self.game.calc_hero_score()
             info['final_reward'] = reward # Добавляем в инфо
+            if self.use_reward_shaping_and_clipping:
+                if reward > -3:
+                    reward += 1 # бонус за завершение без фола (Reward Shaping)
+                # Клиппинг. Диапазон [-5, 10] может быть хорошим стартом
+                # (штраф за фол, но не слишком большой, и ограничение больших роялти)
+                reward = np.clip(reward, -5.0, 10.0)
 
 
         # --- 5. Получаем итоговое наблюдение (с уже обновленной фазой/индексом) ---

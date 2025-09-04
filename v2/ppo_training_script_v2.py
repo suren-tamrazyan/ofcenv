@@ -17,7 +17,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 # Импортируем новую среду и компоненты архитектуры
 from ofc_gym_v2 import OfcEnvV2
 from ofc_neural_network_architecture import OFCFeatureExtractor, ACTION_SPACE_DIM  # Для get_last_mask
-# from v2.hh_parser import HHParser
+from v2.hh_parser import HHParser
 
 # --- Регистрация среды (если еще не сделано) ---
 ENV_ID = 'ofc-v2'
@@ -398,6 +398,7 @@ def evaluate_ofc_agent(
         use_masking_in_predict: bool = True,
         eval_vec_env_type: str = "dummy",  # Оставим возможность для subproc
         eval_n_envs: int = 1,  # Количество окружений
+        use_shaping_and_clipping_in_eval: bool = False, # По умолчанию - оцениваем "сырую" производительность
         initial_states_for_eval: Optional[List[Dict]] = None  # Список состояний для curriculum-оценки
 ):
     print(f"\n--- Evaluating Model: {model_path} ---")
@@ -416,7 +417,10 @@ def evaluate_ofc_agent(
 
     def make_deterministic_eval_env(rank: int, seed: int = 0):
         def _init():
-            env = gym.make(ENV_ID)
+            env_kwargs = {
+                "use_reward_shaping_and_clipping": use_shaping_and_clipping_in_eval
+            }
+            env = gym.make(ENV_ID, **env_kwargs)
             env = Monitor(env)
 
             # Переопределяем reset для детерминированного выбора
@@ -654,10 +658,10 @@ if __name__ == "__main__":
         "vec_env_type": "subproc",
         "n_envs": 4
     }
-    '''
+
     validation_hh_parser = HHParser(hh_files_directory="D:\\develop\\temp\\poker\\Eureka\\hh\\validation\\")
     validation_hh_parser.parse_files()
-    initial_states_for_validation = validation_hh_parser.get_states_for_round(5)
+    initial_states_for_validation = validation_hh_parser.get_states_for_round(4)
     final_model_to_eval = os.path.join("./ofc_curriculum_runs/", "Curriculum_stage_r5", "ppo_ofc_model_final")
     evaluate_ofc_agent(final_model_to_eval, n_episodes=50, use_masking_in_predict=True, initial_states_for_eval=initial_states_for_validation)
 '''
@@ -675,3 +679,4 @@ if __name__ == "__main__":
         evaluate_ofc_agent(best_model_to_eval, n_episodes=50, use_masking_in_predict=True)
     else:
         print(f"Best model not found at {best_model_to_eval}, skipping its evaluation.")
+    '''

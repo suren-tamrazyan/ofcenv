@@ -26,9 +26,9 @@ if __name__ == "__main__":
                         help="Base directory for logs and models.")
 
     # Гиперпараметры (примеры)
-    parser.add_argument("--lr_start", type=float, default=1e-4)
-    parser.add_argument("--lr_end", type=float, default=5e-6)
-    parser.add_argument("--ent_coef", type=float, default=0.005)
+    parser.add_argument("--lr_start", type=float, default=3e-4)
+    parser.add_argument("--lr_end", type=float, default=5e-5)
+    parser.add_argument("--ent_coef", type=float, default=0.01)
     parser.add_argument("--vf_coef", type=float, default=0.7)
     parser.add_argument("--n_envs", type=int, default=8)
     parser.add_argument("--n_steps", type=int, default=2048)
